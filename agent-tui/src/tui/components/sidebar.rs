@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::types::{AgentState, Session, SessionMode};
+use crate::types::{Agent, AgentState, Session, SessionMode};
 
 /// Sidebar component for displaying sessions and agents
 pub struct Sidebar {
@@ -25,34 +25,39 @@ impl Sidebar {
     }
 
     /// Draw the sidebar
-    pub fn draw(&self, frame: &mut Frame, area: Rect, session: &Session) {
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        session: &Session,
+        agents: &[Agent],
+        active_agent: Option<&Agent>,
+    ) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(0)])
+            .constraints([Constraint::Length(10), Constraint::Min(0)])
             .split(area);
 
         // Agent status section
-        self.draw_agent_status(frame, layout[0], session);
+        self.draw_agent_status(frame, layout[0], session, agents, active_agent);
 
         // Sessions section
         self.draw_sessions(frame, layout[1], session);
     }
 
     /// Draw agent status panel
-    fn draw_agent_status(&self, frame: &mut Frame, area: Rect, session: &Session) {
+    fn draw_agent_status(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        session: &Session,
+        agents: &[Agent],
+        active_agent: Option<&Agent>,
+    ) {
         let block = Block::default()
             .title(" Agents ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
-
-        // Placeholder agent statuses
-        let agents = vec![
-            ("planner", AgentState::Idle),
-            ("coder", AgentState::Idle),
-            ("reviewer", AgentState::Idle),
-            ("tester", AgentState::Idle),
-            ("explorer", AgentState::Idle),
-        ];
 
         let mut lines = vec![];
         lines.push(Line::from(vec![
@@ -67,17 +72,27 @@ impl Sidebar {
         ]));
         lines.push(Line::from(""));
 
-        for (name, state) in agents {
-            let (icon, color) = match state {
+        // Show all agents from registry with their states
+        for agent in agents {
+            let (icon, color) = match agent.state {
                 AgentState::Idle => ("○", Color::Gray),
                 AgentState::Running => ("●", Color::Green),
                 AgentState::Completed => ("✓", Color::Blue),
                 AgentState::Failed => ("✗", Color::Red),
             };
 
+            // Highlight active agent
+            let name_style = if active_agent.map(|a| a.id == agent.id).unwrap_or(false) {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", icon), Style::default().fg(color)),
-                Span::raw(name),
+                Span::styled(&agent.name, name_style),
             ]));
         }
 
@@ -85,7 +100,7 @@ impl Sidebar {
         lines.push(Line::from(vec![
             Span::styled("Active: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(
-                session.active_agent.as_deref().unwrap_or("None"),
+                active_agent.map(|a| a.name.as_str()).unwrap_or("None"),
                 Style::default().fg(Color::Green),
             ),
         ]));

@@ -21,10 +21,16 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use std::sync::Arc;
+
 use crate::{
+    agent::{AgentEvent, AgentInstance, AgentRuntimeBuilder},
+    agent::agents::{CoderAgent, PlannerAgent, ReviewerAgent, TesterAgent, ExplorerAgent, IntegratorAgent},
+    agent::AgentRegistry,
     config::Config,
     llm::LlmClient,
-    types::{AppEvent, Id, Message, MessageRole, Session, SessionMode, AgentState},
+    orchestrator::{Orchestrator, ExecutionContext},
+    types::{AppEvent, Id, Message, MessageRole, Session, SessionMode, AgentState, Agent, Task, TaskType},
 };
 
 use self::components::{Chat, Input, Sidebar};
@@ -42,7 +48,17 @@ pub struct App {
     /// Sidebar component
     sidebar: Sidebar,
     /// LLM client
-    llm_client: Option<LlmClient>,
+    llm_client: Option<Arc<LlmClient>>,
+    /// Orchestrator for task execution
+    orchestrator: Option<Orchestrator>,
+    /// Agent registry
+    agent_registry: AgentRegistry,
+    /// Active agent for manual mode
+    active_agent: Option<Agent>,
+    /// Agent event receiver
+    agent_event_rx: mpsc::Receiver<AgentEvent>,
+    /// Agent event sender
+    agent_event_tx: mpsc::Sender<AgentEvent>,
     /// Whether the app should quit
     should_quit: bool,
     /// Show sidebar
@@ -78,6 +94,7 @@ impl App {
     /// Create a new application instance
     pub fn new(config: Config) -> Result<Self> {
         let (event_tx, event_rx) = mpsc::channel(100);
+        let (agent_event_tx, agent_event_rx) = mpsc::channel(100);
         
         let session = Session::new("New Session");
         
@@ -88,12 +105,12 @@ impl App {
             match std::env::var(env_var) {
                 Ok(api_key) => {
                     info!("Initializing LLM client with API key from environment");
-                    Some(LlmClient::new(
+                    Some(Arc::new(LlmClient::new(
                         &api_key,
                         &config.llm.model,
                         config.llm.max_tokens,
                         config.llm.temperature,
-                    ))
+                    )))
                 }
                 Err(_) => {
                     warn!("LLM API key environment variable '{}' not set", env_var);
@@ -102,13 +119,29 @@ impl App {
             }
         } else {
             info!("Initializing LLM client with configured API key");
-            Some(LlmClient::new(
+            Some(Arc::new(LlmClient::new(
                 &config.llm.api_key,
                 &config.llm.model,
                 config.llm.max_tokens,
                 config.llm.temperature,
-            ))
+            )))
         };
+        
+        // Initialize orchestrator if we have an LLM client
+        let orchestrator = llm_client.as_ref().map(|client| {
+            Orchestrator::new(
+                client.clone(),
+                agent_event_tx.clone(),
+                config.orchestration.max_concurrent_agents,
+            )
+        });
+        
+        // Initialize agent registry with default agents
+        let mut agent_registry = AgentRegistry::new();
+        crate::agent::agents::initialize_default_agents(&mut agent_registry);
+        
+        // Set default active agent to coder for manual mode
+        let active_agent = agent_registry.get("coder").cloned();
         
         Ok(Self {
             config: config.clone(),
@@ -117,6 +150,11 @@ impl App {
             input: Input::new(),
             sidebar: Sidebar::new(),
             llm_client,
+            orchestrator,
+            agent_registry,
+            active_agent,
+            agent_event_rx,
+            agent_event_tx,
             should_quit: false,
             show_sidebar: true,
             mode: AppMode::Normal,
@@ -182,6 +220,11 @@ impl App {
             // Handle app events
             while let Ok(event) = self.event_rx.try_recv() {
                 self.handle_app_event(event).await?;
+            }
+
+            // Handle agent events
+            while let Ok(event) = self.agent_event_rx.try_recv() {
+                self.handle_agent_event(event).await?;
             }
         }
 
@@ -263,7 +306,17 @@ impl App {
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     let idx = c.to_digit(10).unwrap() as usize;
-                    // TODO: Select agent by index
+                    // Select agent by index
+                    let agent_names = vec!["planner", "coder", "reviewer", "tester", "explorer", "integrator"];
+                    if idx > 0 && idx <= agent_names.len() {
+                        let agent_name = agent_names[idx - 1];
+                        if let Some(agent) = self.agent_registry.get(agent_name) {
+                            self.active_agent = Some(agent.clone());
+                            let msg = Message::system(&format!("Selected agent: {}", agent_name));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
                     self.mode = AppMode::Normal;
                 }
                 _ => {}
@@ -298,7 +351,7 @@ impl App {
             }
             AppEvent::AgentStateChanged(agent_id, state) => {
                 debug!("Agent {} state changed to {:?}", agent_id, state);
-                // TODO: Update sidebar
+                // TODO: Update sidebar with agent states
             }
             AppEvent::TaskStatusChanged(task_id, status) => {
                 debug!("Task {} status changed to {:?}", task_id, status);
@@ -317,6 +370,47 @@ impl App {
             }
             AppEvent::Status(msg) => {
                 info!("Status: {}", msg);
+                // Optionally display status messages in chat
+                if msg.starts_with("Agent") && (msg.contains("started") || msg.contains("completed")) {
+                    self.chat.add_message(Message::system(&msg));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle agent events
+    async fn handle_agent_event(&mut self, event: AgentEvent) -> Result<()> {
+        match event {
+            AgentEvent::Started { agent_id } => {
+                debug!("Agent {} started processing", agent_id);
+                let _ = self.event_tx.send(AppEvent::Status(format!("Agent {} started", agent_id))).await;
+            }
+            AgentEvent::Completed { agent_id, result } => {
+                debug!("Agent {} completed processing", agent_id);
+                if result.success {
+                    let msg = Message::agent(&result.output, &agent_id);
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                } else {
+                    let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+                    let msg = Message::system(&format!("Agent {} failed: {}", agent_id, error_msg));
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
+            }
+            AgentEvent::Message { agent_id, content } => {
+                // Streaming message (not used in basic implementation)
+                debug!("Agent {} message: {}", agent_id, content);
+            }
+            AgentEvent::Error { agent_id, error } => {
+                error!("Agent {} error: {}", agent_id, error);
+                let msg = Message::system(&format!("Agent {} error: {}", agent_id, error));
+                self.session.add_message(msg.clone());
+                self.chat.add_message(msg);
+            }
+            AgentEvent::StateChanged { agent_id, state } => {
+                let _ = self.event_tx.send(AppEvent::AgentStateChanged(agent_id, state)).await;
             }
         }
         Ok(())
@@ -343,12 +437,9 @@ impl App {
         // Clear input
         self.input.clear();
 
-        // Check if we have an LLM client
-        if let Some(client) = &self.llm_client {
-            // Create system message for context
-            let system_msg = Message::system("You are a helpful AI assistant.");
-            
-            // Build message history (last 10 messages for context)
+        // Check if we have an orchestrator
+        if let Some(orchestrator) = &self.orchestrator {
+            // Get message history for context (last 10 messages)
             let history: Vec<Message> = self
                 .session
                 .messages
@@ -358,24 +449,66 @@ impl App {
                 .rev()
                 .cloned()
                 .collect();
-            
-            // Add system message at the beginning
-            let mut messages = vec![system_msg];
-            messages.extend(history);
 
-            // Send to LLM
-            match client.send_message(&messages).await {
-                Ok(response) => {
-                    let response_msg = Message::agent(&response, "assistant");
-                    self.session.add_message(response_msg.clone());
-                    self.chat.add_message(response_msg);
+            // Get the agent to use based on mode
+            let agent = match self.session.mode {
+                SessionMode::Manual => {
+                    // Use the currently selected agent
+                    if let Some(agent) = &self.active_agent {
+                        agent.clone()
+                    } else {
+                        let error_msg = Message::system("No agent selected. Use /agent <name> to select an agent.");
+                        self.session.add_message(error_msg.clone());
+                        self.chat.add_message(error_msg);
+                        return Ok(());
+                    }
                 }
-                Err(e) => {
-                    let error_msg = Message::system(&format!("Error from LLM: {}", e));
-                    self.session.add_message(error_msg.clone());
-                    self.chat.add_message(error_msg);
+                SessionMode::Auto => {
+                    // For now, use coder as default in auto mode
+                    // TODO: Implement dynamic routing
+                    if let Some(agent) = self.agent_registry.get("coder") {
+                        agent.clone()
+                    } else {
+                        let error_msg = Message::system("Default agent (coder) not found in registry.");
+                        self.session.add_message(error_msg.clone());
+                        self.chat.add_message(error_msg);
+                        return Ok(());
+                    }
                 }
-            }
+            };
+
+            // Clone what we need for the async task
+            let agent_name = agent.name.clone();
+            let event_tx = self.event_tx.clone();
+            let llm_client = self.llm_client.clone().unwrap();
+            let agent_event_tx = self.agent_event_tx.clone();
+            let max_concurrent = self.config.orchestration.max_concurrent_agents;
+            
+            // Show that we're processing
+            let processing_msg = Message::system(&format!("Agent '{}' is processing...", agent_name));
+            self.session.add_message(processing_msg.clone());
+            self.chat.add_message(processing_msg);
+
+            // Spawn the agent execution in a background task
+            tokio::spawn(async move {
+                // Create a temporary executor for this task
+                use crate::orchestrator::Executor;
+                let executor = Executor::new(llm_client, agent_event_tx, max_concurrent);
+                let result = executor.execute_chat(agent, content, history).await;
+                
+                match result {
+                    Ok(response) => {
+                        let _ = event_tx.send(AppEvent::MessageReceived(
+                            Message::agent(&response, &agent_name)
+                        )).await;
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(AppEvent::Error(format!(
+                            "Agent execution failed: {}", e
+                        ))).await;
+                    }
+                }
+            });
         } else {
             let response = Message::system(
                 "No LLM client configured. Please set OPENAI_API_KEY environment variable or configure api_key in ~/.config/agent-tui/config.toml"
@@ -438,6 +571,67 @@ impl App {
                     }
                 }
             }
+            "/agent" => {
+                if let Some(agent_name) = args.first() {
+                    if let Some(agent) = self.agent_registry.get(agent_name) {
+                        self.active_agent = Some(agent.clone());
+                        let msg = Message::system(&format!("Selected agent: {} ({})", agent_name, agent.role.as_str()));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    } else {
+                        let available: Vec<String> = self.agent_registry.list()
+                            .iter()
+                            .map(|a| a.name.clone())
+                            .collect();
+                        let msg = Message::system(&format!(
+                            "Unknown agent: {}. Available agents: {}", 
+                            agent_name, 
+                            available.join(", ")
+                        ));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    }
+                } else {
+                    // Show current agent or list available
+                    if let Some(agent) = &self.active_agent {
+                        let msg = Message::system(&format!(
+                            "Current agent: {} ({})", 
+                            agent.name, 
+                            agent.role.as_str()
+                        ));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    } else {
+                        let available: Vec<String> = self.agent_registry.list()
+                            .iter()
+                            .map(|a| format!("{} ({})", a.name, a.role.as_str()))
+                            .collect();
+                        let msg = Message::system(&format!(
+                            "No agent selected. Available agents: {}", 
+                            available.join(", ")
+                        ));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    }
+                }
+            }
+            "/agents" => {
+                let agents: Vec<String> = self.agent_registry.list()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        let status = if self.active_agent.as_ref().map(|active| active.id == a.id).unwrap_or(false) {
+                            " [ACTIVE]"
+                        } else {
+                            ""
+                        };
+                        format!("{}. {} ({}){}", i + 1, a.name, a.role.as_str(), status)
+                    })
+                    .collect();
+                let msg = Message::system(&format!("Available agents:\n{}", agents.join("\n")));
+                self.session.add_message(msg.clone());
+                self.chat.add_message(msg);
+            }
             "/clear" => {
                 self.session.messages.clear();
                 self.chat.clear();
@@ -448,6 +642,7 @@ impl App {
             "/new" => {
                 self.session = Session::new("New Session");
                 self.chat.clear();
+                self.active_agent = self.agent_registry.get("coder").cloned();
                 let msg = Message::system("Started new session.");
                 self.session.add_message(msg.clone());
                 self.chat.add_message(msg);
@@ -479,7 +674,8 @@ impl App {
 
         // Sidebar
         if self.show_sidebar {
-            self.sidebar.draw(frame, main_layout[0], &self.session);
+            let agents: Vec<_> = self.agent_registry.list().to_vec();
+            self.sidebar.draw(frame, main_layout[0], &self.session, &agents, self.active_agent.as_ref());
         }
 
         // Main content area
@@ -518,18 +714,24 @@ impl App {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
 
-        let text = vec![
+        // Build dynamic agent list from registry
+        let mut text: Vec<Line> = vec![
             Line::from("Available agents:"),
             Line::from(""),
-            Line::from("1. planner - Plans and orchestrates workflows"),
-            Line::from("2. coder - Writes and modifies code"),
-            Line::from("3. reviewer - Reviews code for quality"),
-            Line::from("4. tester - Generates and runs tests"),
-            Line::from("5. explorer - Explores codebase structure"),
-            Line::from("6. integrator - Synthesizes results"),
-            Line::from(""),
-            Line::from("Press number to select, ESC to cancel"),
         ];
+
+        for (idx, agent) in self.agent_registry.list().iter().enumerate() {
+            let line = Line::from(format!(
+                "{}. {} - {}", 
+                idx + 1, 
+                agent.name, 
+                agent.description
+            ));
+            text.push(line);
+        }
+
+        text.push(Line::from(""));
+        text.push(Line::from("Press number to select, ESC to cancel"));
 
         let paragraph = Paragraph::new(text)
             .block(block)
