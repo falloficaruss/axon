@@ -134,13 +134,6 @@ impl Input {
         self.insert_char('\t');
     }
 
-    /// Check if Ctrl key is pressed (placeholder - actual implementation needs crossterm modifiers)
-    pub fn is_ctrl_pressed(&self) -> bool {
-        // This is a placeholder - in the actual implementation,
-        // we'd check the key event modifiers from crossterm
-        false
-    }
-
     /// Draw the input component
     pub fn draw(&self, frame: &mut Frame, area: Rect, mode: AppMode) {
         let (title, border_color) = match mode {

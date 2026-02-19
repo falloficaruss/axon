@@ -2,7 +2,7 @@ pub mod components;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -206,7 +206,7 @@ impl App {
             if crossterm::event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        self.handle_key_event(key.code).await?;
+                        self.handle_key_event(key).await?;
                     }
                 }
             }
@@ -232,55 +232,65 @@ impl App {
     }
 
     /// Handle key events
-    async fn handle_key_event(&mut self, key: KeyCode) -> Result<()> {
+    async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match self.mode {
-            AppMode::Normal => match key {
-                KeyCode::Char('c') if self.input.is_ctrl_pressed() => {
-                    self.should_quit = true;
-                }
-                KeyCode::Char('b') if self.input.is_ctrl_pressed() => {
-                    self.show_sidebar = !self.show_sidebar;
-                }
-                KeyCode::Char('m') if self.input.is_ctrl_pressed() => {
-                    self.mode = AppMode::MemoryManager;
-                }
-                KeyCode::Char('a') if self.input.is_ctrl_pressed() => {
-                    self.mode = AppMode::AgentSelect;
-                }
-                KeyCode::Enter => {
-                    self.submit_input().await?;
-                }
-                KeyCode::Up => {
-                    self.input.previous_history();
-                }
-                KeyCode::Down => {
-                    self.input.next_history();
-                }
-                KeyCode::Tab => {
-                    self.input.autocomplete();
-                }
-                KeyCode::Char('/') => {
-                    self.input.insert_char('/');
-                    self.mode = AppMode::Command;
-                }
-                KeyCode::Char(c) => {
-                    self.input.insert_char(c);
-                }
-                KeyCode::Backspace => {
-                    self.input.delete_char();
-                    if self.input.is_empty() {
-                        self.mode = AppMode::Normal;
+            AppMode::Normal => {
+                // Check for Ctrl+key combinations first
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('c') => {
+                            self.should_quit = true;
+                        }
+                        KeyCode::Char('b') => {
+                            self.show_sidebar = !self.show_sidebar;
+                        }
+                        KeyCode::Char('m') => {
+                            self.mode = AppMode::MemoryManager;
+                        }
+                        KeyCode::Char('a') => {
+                            self.mode = AppMode::AgentSelect;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    // Regular key handling without Ctrl modifier
+                    match key.code {
+                        KeyCode::Enter => {
+                            self.submit_input().await?;
+                        }
+                        KeyCode::Up => {
+                            self.input.previous_history();
+                        }
+                        KeyCode::Down => {
+                            self.input.next_history();
+                        }
+                        KeyCode::Tab => {
+                            self.input.autocomplete();
+                        }
+                        KeyCode::Char('/') => {
+                            self.input.insert_char('/');
+                            self.mode = AppMode::Command;
+                        }
+                        KeyCode::Char(c) => {
+                            self.input.insert_char(c);
+                        }
+                        KeyCode::Backspace => {
+                            self.input.delete_char();
+                            if self.input.is_empty() {
+                                self.mode = AppMode::Normal;
+                            }
+                        }
+                        KeyCode::Left => {
+                            self.input.move_cursor_left();
+                        }
+                        KeyCode::Right => {
+                            self.input.move_cursor_right();
+                        }
+                        _ => {}
                     }
                 }
-                KeyCode::Left => {
-                    self.input.move_cursor_left();
-                }
-                KeyCode::Right => {
-                    self.input.move_cursor_right();
-                }
-                _ => {}
-            },
-            AppMode::Command => match key {
+            }
+            AppMode::Command => match key.code {
                 KeyCode::Enter => {
                     self.execute_command().await?;
                     self.mode = AppMode::Normal;
@@ -300,7 +310,7 @@ impl App {
                 }
                 _ => {}
             },
-            AppMode::AgentSelect => match key {
+            AppMode::AgentSelect => match key.code {
                 KeyCode::Esc => {
                     self.mode = AppMode::Normal;
                 }
@@ -321,13 +331,13 @@ impl App {
                 }
                 _ => {}
             },
-            AppMode::MemoryManager => match key {
+            AppMode::MemoryManager => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.mode = AppMode::Normal;
                 }
                 _ => {}
             },
-            AppMode::Confirm => match key {
+            AppMode::Confirm => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     // TODO: Confirm action
                     self.mode = AppMode::Normal;
