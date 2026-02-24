@@ -21,12 +21,20 @@ impl AgentRegistry {
         self.agents.push(agent);
     }
 
-    pub fn get(&self, id: &str) -> Option<&Agent> {
+    pub fn get(&self, id_or_name: &str) -> Option<&Agent> {
+        self.agents.iter().find(|a| a.id == id_or_name || a.name == id_or_name)
+    }
+
+    pub fn get_mut(&mut self, id_or_name: &str) -> Option<&mut Agent> {
+        self.agents.iter_mut().find(|a| a.id == id_or_name || a.name == id_or_name)
+    }
+
+    pub fn get_by_id(&self, id: &str) -> Option<&Agent> {
         self.agents.iter().find(|a| a.id == id)
     }
 
-    pub fn get_mut(&mut self, id: &str) -> Option<&mut Agent> {
-        self.agents.iter_mut().find(|a| a.id == id)
+    pub fn get_by_name(&self, name: &str) -> Option<&Agent> {
+        self.agents.iter().find(|a| a.name == name)
     }
 
     pub fn list(&self) -> &[Agent] {

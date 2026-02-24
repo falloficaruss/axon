@@ -8,13 +8,13 @@ pub use pool::{AgentPool, AgentPoolBuilder};
 
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    agent::{AgentHandle, AgentEvent, AgentRuntimeBuilder, AgentInstance},
+    agent::{AgentHandle, AgentEvent, AgentRuntimeBuilder, AgentInstance, AgentRegistry},
     llm::LlmClient,
-    types::{Agent, Task, TaskResult, TaskStatus, RoutingDecision, RoutingAnalysis, Session, Id, Message, AgentState},
+    types::{Agent, Task, TaskResult, TaskStatus, RoutingDecision, RoutingAnalysis, Session, Id, Message, AgentState, MessageRole, TaskType},
 };
 
 /// Dynamic task router
@@ -25,22 +25,111 @@ impl Router {
         Self
     }
 
-    /// Analyze a task and determine routing
-    pub async fn analyze(&self, task: &Task, session: &Session) -> Result<RoutingAnalysis> {
-        // TODO: Implement LLM-based routing analysis
+    /// Analyze a task and determine routing using LLM
+    pub async fn analyze(
+        &self,
+        llm_client: Arc<LlmClient>,
+        registry: &AgentRegistry,
+        task: &Task,
+        session: &Session,
+    ) -> Result<RoutingAnalysis> {
+        info!("Analyzing task for routing: {}", task.description);
+        
+        let agents = registry.list();
+        let mut agent_descriptions = String::new();
+        for agent in agents {
+            agent_descriptions.push_str(&format!(
+                "- {} (role: {}): {}\n", 
+                agent.name, 
+                agent.role.as_str(), 
+                agent.description
+            ));
+        }
+
+        // Get recent context from session
+        let mut history = String::new();
+        for msg in session.messages.iter().rev().take(5).rev() {
+            let role = match msg.role {
+                MessageRole::User => "User",
+                MessageRole::Agent => "Agent",
+                MessageRole::System => "System",
+            };
+            history.push_str(&format!("{}: {}\n", role, msg.content));
+        }
+
+        let prompt = format!(
+            "You are an AI task router. Analyze the user request and suggest the most appropriate agents.\n\n\
+            Available Agents:\n{}\n\
+            Recent Conversation:\n{}\n\
+            Current Task: {}\n\n\
+            Respond ONLY with a JSON object in this format:\n\
+            {{\n  \"task_type\": \"CodeGeneration|CodeEdit|CodeReview|TestGeneration|TestExecution|Exploration|Planning|Synthesis|General\",\n  \"suggested_agents\": [[\"agent_name\", confidence_score]],\n  \"can_parallelize\": bool,\n  \"estimated_complexity\": 1-10,\n  \"requires_subtasks\": bool\n}}",
+            agent_descriptions, history, task.description
+        );
+
+        let messages = vec![Message::system(&prompt)];
+        let response = llm_client.send_message(&messages).await?;
+        
+        // Clean up response in case LLM adds markdown blocks
+        let clean_response = response.trim().trim_start_matches("```json").trim_end_matches("```").trim();
+
+        let analysis_json: serde_json::Value = serde_json::from_str(clean_response)
+            .map_err(|e| anyhow!("Failed to parse routing analysis: {}. Response was: {}", e, clean_response))?;
+
+        let task_type = match analysis_json["task_type"].as_str().unwrap_or("General") {
+            "CodeGeneration" => TaskType::CodeGeneration,
+            "CodeEdit" => TaskType::CodeEdit,
+            "CodeReview" => TaskType::CodeReview,
+            "TestGeneration" => TaskType::TestGeneration,
+            "TestExecution" => TaskType::TestExecution,
+            "Exploration" => TaskType::Exploration,
+            "Planning" => TaskType::Planning,
+            "Synthesis" => TaskType::Synthesis,
+            _ => TaskType::General,
+        };
+
+        let mut suggested_agents = vec![];
+        if let Some(agents_arr) = analysis_json["suggested_agents"].as_array() {
+            for item in agents_arr {
+                if let Some(agent_info) = item.as_array() {
+                    if agent_info.len() >= 2 {
+                        let name = agent_info[0].as_str().unwrap_or("");
+                        let confidence = agent_info[1].as_f64().unwrap_or(0.0) as f32;
+                        
+                        if let Some(agent) = registry.get(name) {
+                            suggested_agents.push((agent.id.clone(), confidence));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(RoutingAnalysis {
-            task_type: task.task_type,
-            suggested_agents: vec![],
-            can_parallelize: false,
-            estimated_complexity: 5,
-            requires_subtasks: false,
+            task_type,
+            suggested_agents,
+            can_parallelize: analysis_json["can_parallelize"].as_bool().unwrap_or(false),
+            estimated_complexity: analysis_json["estimated_complexity"].as_u64().unwrap_or(5) as u32,
+            requires_subtasks: analysis_json["requires_subtasks"].as_bool().unwrap_or(false),
         })
     }
 
     /// Make a routing decision
     pub async fn route(&self, task: Task, analysis: RoutingAnalysis) -> Result<RoutingDecision> {
-        // TODO: Implement routing logic
-        Ok(RoutingDecision::new(task, vec![], 0.5))
+        // Simple routing logic: pick agents with high confidence
+        let selected_agents: Vec<Id> = analysis.suggested_agents
+            .iter()
+            .filter(|(_, conf)| *conf > 0.6)
+            .map(|(id, _)| id.clone())
+            .collect();
+            
+        let mut decision = RoutingDecision::new(task, vec![], 0.0);
+        decision.selected_agents = selected_agents;
+        
+        if !analysis.suggested_agents.is_empty() {
+            decision.confidence = analysis.suggested_agents[0].1;
+        }
+
+        Ok(decision)
     }
 }
 
@@ -203,6 +292,10 @@ impl Executor {
 
 /// Orchestrator that coordinates routing, planning, and execution
 pub struct Orchestrator {
+    /// LLM client for routing and planning
+    llm_client: Arc<LlmClient>,
+    /// Agent registry
+    registry: Arc<RwLock<AgentRegistry>>,
     /// Task router
     router: Router,
     /// Task planner
@@ -215,10 +308,13 @@ impl Orchestrator {
     /// Create a new orchestrator
     pub fn new(
         llm_client: Arc<LlmClient>,
+        registry: Arc<RwLock<AgentRegistry>>,
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
     ) -> Self {
         Self {
+            llm_client: llm_client.clone(),
+            registry,
             router: Router::new(),
             planner: Planner::new(),
             executor: Executor::new(llm_client, event_tx, max_concurrent),
@@ -228,27 +324,34 @@ impl Orchestrator {
     /// Execute a task with automatic routing
     pub async fn execute_auto(&self, task: Task, session: &Session) -> Result<TaskResult> {
         // Analyze the task
-        let analysis = self.router.analyze(&task, session).await?;
+        let analysis = {
+            let registry = self.registry.read().await;
+            self.router.analyze(self.llm_client.clone(), &registry, &task, session).await?
+        };
         
         // Make routing decision
         let decision = self.router.route(task.clone(), analysis).await?;
         
-        // For now, just use the first selected agent or default to a generic response
-        // TODO: Actually spawn the selected agents
+        // Execute with the first selected agent
         if let Some(agent_id) = decision.selected_agents.first() {
-            // We would look up the agent and execute with it
-            // For now, return a placeholder result
-            Ok(TaskResult {
-                success: true,
-                output: format!("Task routed to agent: {}", agent_id),
-                error: None,
-                metadata: Default::default(),
-            })
+            let agent_opt = {
+                let registry = self.registry.read().await;
+                registry.get_by_id(agent_id).cloned()
+            };
+
+            if let Some(agent) = agent_opt {
+                let context = ExecutionContext::new(session.id.clone())
+                    .with_messages(session.messages.clone());
+                    
+                self.executor.execute_task(agent, task, context).await
+            } else {
+                Err(anyhow!("Selected agent {} not found in registry", agent_id))
+            }
         } else {
             Ok(TaskResult {
                 success: false,
                 output: String::new(),
-                error: Some("No agent selected for task".to_string()),
+                error: Some("No suitable agent found for this task".to_string()),
                 metadata: Default::default(),
             })
         }

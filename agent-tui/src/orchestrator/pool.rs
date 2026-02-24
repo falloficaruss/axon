@@ -54,7 +54,12 @@ impl AgentPool {
 
     /// Spawn a new agent in the pool
     pub async fn spawn_agent(&self, agent: Agent) -> Result<AgentHandle> {
-        // Check capacity
+        // Try to cleanup finished agents if we might be at capacity
+        if self.is_at_capacity().await {
+            self.cleanup_finished().await;
+        }
+
+        // Check capacity again
         if self.is_at_capacity().await {
             return Err(anyhow!(
                 "Agent pool at capacity (max {} agents)",
@@ -69,7 +74,8 @@ impl AgentPool {
             .agent(agent)
             .llm_client(self.llm_client.clone())
             .event_tx(self.event_tx.clone())
-            .spawn()?;
+            .spawn()
+            .await?;
 
         let handle = instance.handle.clone();
 

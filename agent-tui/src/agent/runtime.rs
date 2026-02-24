@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, error, info, warn};
 use anyhow::{anyhow, Result};
+use futures::StreamExt;
 
 use crate::{
     llm::LlmClient,
@@ -153,28 +154,28 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     /// Create a new agent runtime
     pub fn new(
-        agent: Agent,
+        agent: Arc<RwLock<Agent>>,
         llm_client: Arc<LlmClient>,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Self {
         Self {
-            agent: Arc::new(RwLock::new(agent)),
+            agent,
             llm_client,
             event_tx,
         }
     }
 
     /// Start the agent runtime as a background task
-    pub fn spawn(mut self) -> AgentHandle {
+    pub async fn spawn(self) -> AgentHandle {
         let (command_tx, mut command_rx) = mpsc::channel::<(AgentCommand, Option<oneshot::Sender<AgentResponse>>)>(32);
         
         let agent_id = {
-            let agent = self.agent.blocking_read();
+            let agent = self.agent.read().await;
             agent.id.clone()
         };
         
         let agent_name = {
-            let agent = self.agent.blocking_read();
+            let agent = self.agent.read().await;
             agent.name.clone()
         };
 
@@ -186,15 +187,22 @@ impl AgentRuntime {
 
         // Spawn the agent task
         tokio::spawn(async move {
+            let mut this = self;
             info!("Agent {} ({}) started", agent_name, agent_id);
             
             loop {
                 match command_rx.recv().await {
                     Some((command, response_tx)) => {
-                        let result = self.handle_command(&agent_id, command).await;
+                        let is_shutdown = matches!(command, AgentCommand::Shutdown);
+                        let result = this.handle_command(&agent_id, command).await;
                         
                         if let Some(tx) = response_tx {
                             let _ = tx.send(result);
+                        }
+
+                        if is_shutdown {
+                            info!("Agent {} received shutdown command", agent_id);
+                            break;
                         }
                     }
                     None => {
@@ -353,12 +361,14 @@ impl AgentRuntime {
         match self.llm_client.send_message_streaming(&messages).await {
             Ok(mut stream) => {
                 let mut full_response = String::new();
-                while let Some(Ok(content)) = stream.next().await {
-                    full_response.push_str(&content);
-                    let _ = self.event_tx.send(AgentEvent::Message {
-                        agent_id: agent_id.clone(),
-                        content,
-                    }).await;
+                while let Some(item) = stream.next().await {
+                    if let Ok(content) = item {
+                        full_response.push_str(&content);
+                        let _ = self.event_tx.send(AgentEvent::Message {
+                            agent_id: agent_id.clone(),
+                            content,
+                        }).await;
+                    }
                 }
                 
                 // Update state back to idle
@@ -490,14 +500,14 @@ impl AgentRuntimeBuilder {
     }
 
     /// Build and spawn the agent runtime
-    pub fn spawn(self) -> Result<AgentInstance> {
+    pub async fn spawn(self) -> Result<AgentInstance> {
         let agent = self.agent.ok_or_else(|| anyhow!("Agent not set"))?;
         let llm_client = self.llm_client.ok_or_else(|| anyhow!("LLM client not set"))?;
         let event_tx = self.event_tx.ok_or_else(|| anyhow!("Event sender not set"))?;
 
-        let agent_arc = Arc::new(RwLock::new(agent.clone()));
-        let runtime = AgentRuntime::new(agent, llm_client, event_tx);
-        let handle = runtime.spawn();
+        let agent_arc = Arc::new(RwLock::new(agent));
+        let runtime = AgentRuntime::new(agent_arc.clone(), llm_client, event_tx);
+        let handle = runtime.spawn().await;
 
         Ok(AgentInstance {
             handle,

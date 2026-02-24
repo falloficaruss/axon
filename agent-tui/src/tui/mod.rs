@@ -18,7 +18,7 @@ use std::{
     io,
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use std::sync::Arc;
@@ -52,7 +52,7 @@ pub struct App {
     /// Orchestrator for task execution
     orchestrator: Option<Arc<Orchestrator>>,
     /// Agent registry
-    agent_registry: AgentRegistry,
+    agent_registry: Arc<RwLock<AgentRegistry>>,
     /// Active agent for manual mode
     active_agent: Option<Agent>,
     /// Agent event receiver
@@ -127,21 +127,24 @@ impl App {
             )))
         };
         
-        // Initialize orchestrator if we have an LLM client
-        let orchestrator = llm_client.as_ref().map(|client| {
-            Arc::new(Orchestrator::new(
-                client.clone(),
-                agent_event_tx.clone(),
-                config.orchestration.max_concurrent_agents,
-            ))
-        });
-        
         // Initialize agent registry with default agents
         let mut agent_registry = AgentRegistry::new();
         crate::agent::agents::initialize_default_agents(&mut agent_registry);
         
         // Set default active agent to coder for manual mode
         let active_agent = agent_registry.get("coder").cloned();
+        
+        let agent_registry = Arc::new(RwLock::new(agent_registry));
+        
+        // Initialize orchestrator if we have an LLM client
+        let orchestrator = llm_client.as_ref().map(|client| {
+            Arc::new(Orchestrator::new(
+                client.clone(),
+                agent_registry.clone(),
+                agent_event_tx.clone(),
+                config.orchestration.max_concurrent_agents,
+            ))
+        });
         
         Ok(Self {
             config: config.clone(),
@@ -267,7 +270,7 @@ impl App {
                         KeyCode::Tab => {
                             self.input.autocomplete();
                         }
-                        KeyCode::Char('/') => {
+                        KeyCode::Char('/') if self.input.is_empty() => {
                             self.input.insert_char('/');
                             self.mode = AppMode::Command;
                         }
@@ -394,6 +397,12 @@ impl App {
                     self.chat.add_message(Message::system(&msg));
                 }
             }
+            AppEvent::AgentStateChanged(agent_id, state) => {
+                debug!("Agent {} state changed to {:?}", agent_id, state);
+                if let Some(agent) = self.agent_registry.get_mut(&agent_id) {
+                    agent.state = state;
+                }
+            }
         }
         Ok(())
     }
@@ -468,60 +477,69 @@ impl App {
                 .cloned()
                 .collect();
 
-            // Get the agent to use based on mode
-            let agent = match self.session.mode {
+            let session_clone = self.session.clone();
+            let event_tx = self.event_tx.clone();
+            let orchestrator = orchestrator.clone();
+
+            match self.session.mode {
                 SessionMode::Manual => {
                     // Use the currently selected agent
                     if let Some(agent) = &self.active_agent {
-                        agent.clone()
+                        let agent = agent.clone();
+                        let agent_name = agent.name.clone();
+                        
+                        // Show that we're processing
+                        let processing_msg = Message::system(&format!("Agent '{}' is processing...", agent_name));
+                        self.session.add_message(processing_msg.clone());
+                        self.chat.add_message(processing_msg);
+
+                        // Spawn the agent execution in a background task
+                        tokio::spawn(async move {
+                            let result = orchestrator.execute_chat_streaming(agent, content, history).await;
+                            
+                            if let Err(e) = result {
+                                let _ = event_tx.send(AppEvent::Error(format!(
+                                    "Agent execution failed: {}", e
+                                ))).await;
+                            }
+                        });
                     } else {
                         let error_msg = Message::system("No agent selected. Use /agent <name> to select an agent.");
                         self.session.add_message(error_msg.clone());
                         self.chat.add_message(error_msg);
-                        return Ok(());
                     }
                 }
                 SessionMode::Auto => {
-                    // For now, use coder as default in auto mode
-                    // TODO: Implement dynamic routing
-                    if let Some(agent) = self.agent_registry.get("coder") {
-                        agent.clone()
-                    } else {
-                        let error_msg = Message::system("Default agent (coder) not found in registry.");
-                        self.session.add_message(error_msg.clone());
-                        self.chat.add_message(error_msg);
-                        return Ok(());
-                    }
-                }
-            };
+                    // Show that we're routing
+                    let routing_msg = Message::system("Analyzing task and routing to appropriate agent...");
+                    self.session.add_message(routing_msg.clone());
+                    self.chat.add_message(routing_msg);
 
-            // Clone what we need for the async task
-            let agent_name = agent.name.clone();
-            let event_tx = self.event_tx.clone();
-            let orchestrator = orchestrator.clone();
-            
-            // Show that we're processing
-            let processing_msg = Message::system(&format!("Agent '{}' is processing...", agent_name));
-            self.session.add_message(processing_msg.clone());
-            self.chat.add_message(processing_msg);
+                    // Create a task
+                    let task = Task::new(&content, TaskType::General);
 
-            // Spawn the agent execution in a background task
-            tokio::spawn(async move {
-                let result = orchestrator.execute_chat_streaming(agent, content, history).await;
-                
-                match result {
-                    Ok(response) => {
-                        // The full response is received, but streaming updates have already been sent.
-                        // We can use this to finalize the message, e.g., save it.
-                        // For now, we do nothing as the streaming handles the display.
-                    }
-                    Err(e) => {
-                        let _ = event_tx.send(AppEvent::Error(format!(
-                            "Agent execution failed: {}", e
-                        ))).await;
-                    }
+                    // Spawn the auto-orchestration in a background task
+                    tokio::spawn(async move {
+                        let result = orchestrator.execute_auto(task, &session_clone).await;
+                        
+                        match result {
+                            Ok(res) => {
+                                if !res.success {
+                                    let error_msg = res.error.unwrap_or_else(|| "Unknown routing error".to_string());
+                                    let _ = event_tx.send(AppEvent::Error(format!(
+                                        "Auto-routing failed: {}", error_msg
+                                    ))).await;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(AppEvent::Error(format!(
+                                    "Auto-orchestration failed: {}", e
+                                ))).await;
+                            }
+                        }
+                    });
                 }
-            });
+            }
         } else {
             let response = Message::system(
                 "No LLM client configured. Please set OPENAI_API_KEY environment variable or configure api_key in ~/.config/agent-tui/config.toml"
