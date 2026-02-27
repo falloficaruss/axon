@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::types::{Message, MessageRole, Session};
+use crate::tui::markdown;
 
 /// Chat component for displaying messages
 pub struct Chat {
@@ -16,6 +17,8 @@ pub struct Chat {
     auto_scroll: bool,
     /// Scrollbar state
     scroll_state: ScrollbarState,
+    /// Whether an agent is currently streaming
+    is_streaming: bool,
 }
 
 impl Chat {
@@ -24,6 +27,7 @@ impl Chat {
             scroll: 0,
             auto_scroll: true,
             scroll_state: ScrollbarState::new(0),
+            is_streaming: false,
         }
     }
 
@@ -35,10 +39,19 @@ impl Chat {
         }
     }
 
+    /// Set streaming state
+    pub fn set_streaming(&mut self, streaming: bool) {
+        self.is_streaming = streaming;
+        if streaming && self.auto_scroll {
+            self.scroll = u16::MAX;
+        }
+    }
+
     /// Clear the chat display
     pub fn clear(&mut self) {
         self.scroll = 0;
         self.scroll_state = ScrollbarState::new(0);
+        self.is_streaming = false;
     }
 
     /// Scroll up
@@ -57,17 +70,21 @@ impl Chat {
 
     /// Draw the chat component
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, session: &Session) {
+        let title = if self.is_streaming {
+            format!(" Chat - {} - Streaming... ", session.title)
+        } else {
+            format!(" Chat - {} ", session.title)
+        };
+
         let block = Block::default()
-            .title(format!(" Chat - {} ", session.title))
+            .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::White));
 
-        let inner_area = block.inner(area);
-
-        // Render messages
-        let mut text_lines: Vec<Line> = vec![];
-
+        // Render all messages with markdown
+        let mut all_lines: Vec<Line> = Vec::new();
         for message in &session.messages {
+            // Header with timestamp and sender
             let (prefix, style) = match message.role {
                 MessageRole::User => (
                     "You",
@@ -103,29 +120,48 @@ impl Chat {
                     format!("[{}] ", timestamp),
                     Style::default().fg(Color::DarkGray),
                 ),
-                Span::styled(format!("{}: ", prefix), style),
+                Span::styled(format!("{}:", prefix), style),
             ]);
+            all_lines.push(header);
 
-            text_lines.push(header);
-
-            // Message content
-            for line in message.content.lines() {
-                text_lines.push(Line::from(format!("  {}", line)));
+            // Parse message content with markdown
+            let content_lines = markdown::parse_markdown(&message.content);
+            for line in content_lines {
+                // Indent content by modifying spans
+                let indented_spans: Vec<Span> = line.spans.into_iter().map(|mut span| {
+                    if !span.content.starts_with('│') && !span.content.starts_with('┌') && !span.content.starts_with('└') {
+                        span.content = format!("  {}", span.content).into();
+                    }
+                    span
+                }).collect();
+                all_lines.push(Line::from(indented_spans));
             }
 
             // Empty line between messages
-            text_lines.push(Line::from(""));
+            all_lines.push(Line::from(""));
         }
 
-        let content_height = text_lines.len();
-        self.scroll_state = self.scroll_state.content_length(content_height);
+        // Add streaming indicator if agent is currently streaming
+        if self.is_streaming {
+            all_lines.push(Line::from(Span::styled(
+                "  ▌",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
 
-        let paragraph = Paragraph::new(Text::from(text_lines))
+        let content_height = all_lines.len();
+        
+        let paragraph = Paragraph::new(Text::from(all_lines))
             .block(block)
             .wrap(Wrap { trim: true })
             .scroll((self.scroll, 0));
 
         frame.render_widget(paragraph, area);
+
+        // Update scroll state after rendering
+        self.scroll_state = self.scroll_state.content_length(content_height);
 
         // Scrollbar
         let scrollbar = Scrollbar::default()

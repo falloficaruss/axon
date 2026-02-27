@@ -1,4 +1,5 @@
 pub mod components;
+pub mod markdown;
 
 use anyhow::Result;
 use crossterm::{
@@ -73,6 +74,8 @@ pub struct App {
     last_tick: Instant,
     /// Tick rate
     tick_rate: Duration,
+    /// Handle to the currently running task (for cancellation)
+    current_task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Application modes
@@ -165,6 +168,7 @@ impl App {
             event_tx,
             last_tick: Instant::now(),
             tick_rate: Duration::from_millis(250),
+            current_task_handle: None,
         })
     }
 
@@ -253,6 +257,10 @@ impl App {
                         KeyCode::Char('a') => {
                             self.mode = AppMode::AgentSelect;
                         }
+                        KeyCode::Char('x') => {
+                            // Cancel current running task
+                            self.cancel_current_task().await?;
+                        }
                         _ => {}
                     }
                 } else {
@@ -271,7 +279,7 @@ impl App {
                             self.input.autocomplete();
                         }
                         KeyCode::Char('/') if self.input.is_empty() => {
-                            self.input.insert_char('/');
+                            // Enter command mode without inserting the slash
                             self.mode = AppMode::Command;
                         }
                         KeyCode::Char(c) => {
@@ -319,8 +327,9 @@ impl App {
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     let idx = (c.to_digit(10).unwrap() as usize).saturating_sub(1);
-                    let agents = self.agent_registry.list();
-                    
+                    let registry = self.agent_registry.blocking_read();
+                    let agents = registry.list();
+
                     if idx < agents.len() {
                         let agent = &agents[idx];
                         self.active_agent = Some(agent.clone());
@@ -328,6 +337,7 @@ impl App {
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     }
+                    drop(registry);
                     self.mode = AppMode::Normal;
                 }
                 _ => {}
@@ -399,7 +409,8 @@ impl App {
             }
             AppEvent::AgentStateChanged(agent_id, state) => {
                 debug!("Agent {} state changed to {:?}", agent_id, state);
-                if let Some(agent) = self.agent_registry.get_mut(&agent_id) {
+                let mut registry = self.agent_registry.write().await;
+                if let Some(agent) = registry.get_mut(&agent_id) {
                     agent.state = state;
                 }
             }
@@ -412,10 +423,12 @@ impl App {
         match event {
             AgentEvent::Started { agent_id } => {
                 debug!("Agent {} started processing", agent_id);
+                self.chat.set_streaming(true);
                 let _ = self.event_tx.send(AppEvent::Status(format!("Agent {} started", agent_id))).await;
             }
             AgentEvent::Completed { agent_id, result } => {
                 debug!("Agent {} completed processing", agent_id);
+                self.chat.set_streaming(false);
                 if result.success {
                     let msg = Message::agent(&result.output, &agent_id);
                     self.session.add_message(msg.clone());
@@ -431,6 +444,7 @@ impl App {
                 let _ = self.event_tx.send(AppEvent::MessageUpdate { agent_id, content }).await;
             }
             AgentEvent::Error { agent_id, error } => {
+                self.chat.set_streaming(false);
                 error!("Agent {} error: {}", agent_id, error);
                 let msg = Message::system(&format!("Agent {} error: {}", agent_id, error));
                 self.session.add_message(msg.clone());
@@ -453,6 +467,14 @@ impl App {
     async fn submit_input(&mut self) -> Result<()> {
         let content = self.input.get_content();
         if content.trim().is_empty() {
+            return Ok(());
+        }
+
+        // Check if a task is already running
+        if self.current_task_handle.is_some() {
+            let error_msg = Message::system("A task is already running. Use /cancel or press Ctrl+X to cancel it first.");
+            self.session.add_message(error_msg.clone());
+            self.chat.add_message(error_msg);
             return Ok(());
         }
 
@@ -487,22 +509,23 @@ impl App {
                     if let Some(agent) = &self.active_agent {
                         let agent = agent.clone();
                         let agent_name = agent.name.clone();
-                        
+
                         // Show that we're processing
                         let processing_msg = Message::system(&format!("Agent '{}' is processing...", agent_name));
                         self.session.add_message(processing_msg.clone());
                         self.chat.add_message(processing_msg);
 
                         // Spawn the agent execution in a background task
-                        tokio::spawn(async move {
+                        let handle = tokio::spawn(async move {
                             let result = orchestrator.execute_chat_streaming(agent, content, history).await;
-                            
+
                             if let Err(e) = result {
                                 let _ = event_tx.send(AppEvent::Error(format!(
                                     "Agent execution failed: {}", e
                                 ))).await;
                             }
                         });
+                        self.current_task_handle = Some(handle);
                     } else {
                         let error_msg = Message::system("No agent selected. Use /agent <name> to select an agent.");
                         self.session.add_message(error_msg.clone());
@@ -519,9 +542,9 @@ impl App {
                     let task = Task::new(&content, TaskType::General);
 
                     // Spawn the auto-orchestration in a background task
-                    tokio::spawn(async move {
+                    let handle = tokio::spawn(async move {
                         let result = orchestrator.execute_auto(task, &session_clone).await;
-                        
+
                         match result {
                             Ok(res) => {
                                 if !res.success {
@@ -538,6 +561,7 @@ impl App {
                             }
                         }
                     });
+                    self.current_task_handle = Some(handle);
                 }
             }
         } else {
@@ -548,6 +572,28 @@ impl App {
             self.chat.add_message(response);
         }
 
+        Ok(())
+    }
+
+    /// Cancel the currently running task
+    async fn cancel_current_task(&mut self) -> Result<()> {
+        if let Some(handle) = self.current_task_handle.take() {
+            handle.abort();
+            let msg = Message::system("Task cancelled by user.");
+            self.session.add_message(msg.clone());
+            self.chat.add_message(msg);
+            
+            // Shutdown any running agents in the orchestrator
+            if let Some(orchestrator) = &self.orchestrator {
+                let _ = orchestrator.executor().shutdown_all().await;
+            }
+            
+            info!("Cancelled running task");
+        } else {
+            let msg = Message::system("No task is currently running.");
+            self.session.add_message(msg.clone());
+            self.chat.add_message(msg);
+        }
         Ok(())
     }
 
@@ -574,6 +620,7 @@ impl App {
 /new - Start new session
 /sessions - List saved sessions
 /memory - Open memory manager
+/cancel - Cancel the currently running task
 /quit - Exit application"#;
                 let msg = Message::system(help_text);
                 self.session.add_message(msg.clone());
@@ -604,19 +651,23 @@ impl App {
             }
             "/agent" => {
                 if let Some(agent_name) = args.first() {
-                    if let Some(agent) = self.agent_registry.get(agent_name) {
+                    let registry = self.agent_registry.read().await;
+                    let agent_opt = registry.get(agent_name).cloned();
+                    let available: Vec<String> = registry.list()
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect();
+                    drop(registry);
+
+                    if let Some(agent) = agent_opt {
                         self.active_agent = Some(agent.clone());
                         let msg = Message::system(&format!("Selected agent: {} ({})", agent_name, agent.role.as_str()));
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     } else {
-                        let available: Vec<String> = self.agent_registry.list()
-                            .iter()
-                            .map(|a| a.name.clone())
-                            .collect();
                         let msg = Message::system(&format!(
-                            "Unknown agent: {}. Available agents: {}", 
-                            agent_name, 
+                            "Unknown agent: {}. Available agents: {}",
+                            agent_name,
                             available.join(", ")
                         ));
                         self.session.add_message(msg.clone());
@@ -626,19 +677,21 @@ impl App {
                     // Show current agent or list available
                     if let Some(agent) = &self.active_agent {
                         let msg = Message::system(&format!(
-                            "Current agent: {} ({})", 
-                            agent.name, 
+                            "Current agent: {} ({})",
+                            agent.name,
                             agent.role.as_str()
                         ));
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     } else {
-                        let available: Vec<String> = self.agent_registry.list()
+                        let registry = self.agent_registry.read().await;
+                        let available: Vec<String> = registry.list()
                             .iter()
                             .map(|a| format!("{} ({})", a.name, a.role.as_str()))
                             .collect();
+                        drop(registry);
                         let msg = Message::system(&format!(
-                            "No agent selected. Available agents: {}", 
+                            "No agent selected. Available agents: {}",
                             available.join(", ")
                         ));
                         self.session.add_message(msg.clone());
@@ -647,7 +700,8 @@ impl App {
                 }
             }
             "/agents" => {
-                let agents: Vec<String> = self.agent_registry.list()
+                let registry = self.agent_registry.read().await;
+                let agents: Vec<String> = registry.list()
                     .iter()
                     .enumerate()
                     .map(|(i, a)| {
@@ -659,6 +713,7 @@ impl App {
                         format!("{}. {} ({}){}", i + 1, a.name, a.role.as_str(), status)
                     })
                     .collect();
+                drop(registry);
                 let msg = Message::system(&format!("Available agents:\n{}", agents.join("\n")));
                 self.session.add_message(msg.clone());
                 self.chat.add_message(msg);
@@ -673,10 +728,15 @@ impl App {
             "/new" => {
                 self.session = Session::new("New Session");
                 self.chat.clear();
-                self.active_agent = self.agent_registry.get("coder").cloned();
+                let registry = self.agent_registry.read().await;
+                self.active_agent = registry.get("coder").cloned();
+                drop(registry);
                 let msg = Message::system("Started new session.");
                 self.session.add_message(msg.clone());
                 self.chat.add_message(msg);
+            }
+            "/cancel" => {
+                self.cancel_current_task().await?;
             }
             "/quit" | "/exit" => {
                 self.should_quit = true;
@@ -705,7 +765,9 @@ impl App {
 
         // Sidebar
         if self.show_sidebar {
-            let agents: Vec<_> = self.agent_registry.list().to_vec();
+            let registry = self.agent_registry.blocking_read();
+            let agents: Vec<_> = registry.list().to_vec();
+            drop(registry);
             self.sidebar.draw(frame, main_layout[0], &self.session, &agents, self.active_agent.as_ref());
         }
 
@@ -739,7 +801,7 @@ impl App {
     /// Draw agent selector popup
     fn draw_agent_selector(&self, frame: &mut Frame) {
         let area = Self::centered_rect(60, 60, frame.area());
-        
+
         let block = Block::default()
             .title("Select Agent")
             .borders(Borders::ALL)
@@ -751,15 +813,17 @@ impl App {
             Line::from(""),
         ];
 
-        for (idx, agent) in self.agent_registry.list().iter().enumerate() {
+        let registry = self.agent_registry.blocking_read();
+        for (idx, agent) in registry.list().iter().enumerate() {
             let line = Line::from(format!(
-                "{}. {} - {}", 
-                idx + 1, 
-                agent.name, 
+                "{}. {} - {}",
+                idx + 1,
+                agent.name,
                 agent.description
             ));
             text.push(line);
         }
+        drop(registry);
 
         text.push(Line::from(""));
         text.push(Line::from("Press number to select, ESC to cancel"));
