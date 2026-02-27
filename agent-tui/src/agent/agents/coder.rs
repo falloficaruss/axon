@@ -317,9 +317,9 @@ mod tests {
     #[test]
     fn test_extract_multiple_code_blocks() {
         let text = "First file:\n\
-                    ```python\nprint('hello')\n```\n\
-                    Second file:\n\
-                    ```javascript\nconsole.log('world');\n```";
+```python\nprint('hello')\n```\n\
+Second file:\n\
+```javascript\nconsole.log('world');\n```";
         let blocks = CoderAgent::extract_code_blocks(text).unwrap();
         
         assert_eq!(blocks.len(), 2);
@@ -631,9 +631,9 @@ mod tests {
     fn test_process_multiple_code_blocks() {
         let task = Task::new("Generate multiple files", TaskType::CodeGeneration);
         let llm_response = "First file:\n\
-                            ```rust:src/lib.rs\npub fn lib_fn() {}\n```\n\
-                            Second file:\n\
-                            ```rust:src/main.rs\nfn main() {}\n```";
+```rust:src/lib.rs\npub fn lib_fn() {}\n```\n\
+Second file:\n\
+```rust:src/main.rs\nfn main() {}\n```";
 
         let result = CoderAgent::process_task(&task, llm_response).unwrap();
         assert!(result.success);
