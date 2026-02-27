@@ -77,6 +77,26 @@ impl Config {
         Ok(data_dir.join("agent-tui"))
     }
 
+    /// Resolve persistence path (handles tilde)
+    pub fn resolve_path(path: &str) -> PathBuf {
+        if path.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(&path[2..]);
+            }
+        }
+        PathBuf::from(path)
+    }
+
+    /// Get absolute session directory
+    pub fn session_dir(&self) -> PathBuf {
+        Self::resolve_path(&self.persistence.session_dir)
+    }
+
+    /// Get absolute memory directory
+    pub fn memory_dir(&self) -> PathBuf {
+        Self::resolve_path(&self.persistence.memory_dir)
+    }
+
     /// Default agent configurations
     fn default_agents() -> HashMap<String, AgentConfig> {
         let mut agents = HashMap::new();

@@ -12,6 +12,7 @@ use anyhow::{anyhow, Result};
 use crate::{
     agent::{AgentHandle, AgentInstance, AgentRuntimeBuilder, AgentEvent},
     llm::LlmClient,
+    shared::SharedMemory,
     types::{Agent, AgentState, Id},
 };
 
@@ -23,6 +24,8 @@ pub struct AgentPool {
     agents: Arc<RwLock<HashMap<Id, AgentInstance>>>,
     /// LLM client for agents
     llm_client: Arc<LlmClient>,
+    /// Shared memory for agents
+    shared_memory: Arc<SharedMemory>,
     /// Event sender for agent events
     event_tx: mpsc::Sender<AgentEvent>,
 }
@@ -32,12 +35,14 @@ impl AgentPool {
     pub fn new(
         max_concurrent: usize,
         llm_client: Arc<LlmClient>,
+        shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Self {
         Self {
             max_concurrent,
             agents: Arc::new(RwLock::new(HashMap::new())),
             llm_client,
+            shared_memory,
             event_tx,
         }
     }
@@ -73,6 +78,7 @@ impl AgentPool {
         let instance = AgentRuntimeBuilder::new()
             .agent(agent)
             .llm_client(self.llm_client.clone())
+            .shared_memory(self.shared_memory.clone())
             .event_tx(self.event_tx.clone())
             .spawn()
             .await?;
@@ -204,6 +210,7 @@ impl AgentPool {
 pub struct AgentPoolBuilder {
     max_concurrent: Option<usize>,
     llm_client: Option<Arc<LlmClient>>,
+    shared_memory: Option<Arc<SharedMemory>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
@@ -213,6 +220,7 @@ impl AgentPoolBuilder {
         Self {
             max_concurrent: None,
             llm_client: None,
+            shared_memory: None,
             event_tx: None,
         }
     }
@@ -229,6 +237,12 @@ impl AgentPoolBuilder {
         self
     }
 
+    /// Set the shared memory
+    pub fn shared_memory(mut self, memory: Arc<SharedMemory>) -> Self {
+        self.shared_memory = Some(memory);
+        self
+    }
+
     /// Set the event sender
     pub fn event_tx(mut self, tx: mpsc::Sender<AgentEvent>) -> Self {
         self.event_tx = Some(tx);
@@ -239,14 +253,205 @@ impl AgentPoolBuilder {
     pub fn build(self) -> Result<AgentPool> {
         let max_concurrent = self.max_concurrent.unwrap_or(5);
         let llm_client = self.llm_client.ok_or_else(|| anyhow!("LLM client not set"))?;
+        let shared_memory = self.shared_memory.ok_or_else(|| anyhow!("Shared memory not set"))?;
         let event_tx = self.event_tx.ok_or_else(|| anyhow!("Event sender not set"))?;
 
-        Ok(AgentPool::new(max_concurrent, llm_client, event_tx))
+        Ok(AgentPool::new(max_concurrent, llm_client, shared_memory, event_tx))
     }
 }
 
 impl Default for AgentPoolBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_agent_pool_new() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        assert_eq!(pool.active_count().await, 0);
+        assert!(!pool.is_at_capacity().await);
+        assert_eq!(pool.available_capacity().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_capacity() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(2, llm_client, shared_memory, event_tx);
+        
+        assert_eq!(pool.available_capacity().await, 2);
+        assert!(!pool.is_at_capacity().await);
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_list_agents() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        let agents = pool.list_agents().await;
+        assert!(agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_get_nonexistent_agent() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        let agent = pool.get_agent(&"nonexistent".to_string()).await;
+        assert!(agent.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_get_state_nonexistent() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        let state = pool.get_agent_state(&"nonexistent".to_string()).await;
+        assert!(state.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_shutdown_nonexistent() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        let result = pool.shutdown_agent(&"nonexistent".to_string()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_cleanup_empty() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        let cleaned = pool.cleanup_finished().await;
+        assert_eq!(cleaned, 0);
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_is_running() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        assert!(!pool.is_running(&"agent-1".to_string()).await);
+    }
+
+    #[tokio::test]
+    async fn test_agent_pool_shutdown_all_empty() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        
+        let result = pool.shutdown_all().await;
+        assert!(result.is_ok());
+    }
+
+    // ==================== AgentPoolBuilder Tests ====================
+
+    #[test]
+    fn test_pool_builder_new() {
+        let builder = AgentPoolBuilder::new();
+        let _ = builder;
+    }
+
+    #[test]
+    fn test_pool_builder_default() {
+        let builder = AgentPoolBuilder::default();
+        let _ = builder;
+    }
+
+    #[tokio::test]
+    async fn test_pool_builder_fluent_interface() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let builder = AgentPoolBuilder::new()
+            .max_concurrent(10)
+            .llm_client(llm_client.clone())
+            .shared_memory(shared_memory.clone())
+            .event_tx(event_tx.clone());
+        
+        let pool = builder.build().unwrap();
+        
+        // Pool should be created successfully
+        assert_eq!(pool.available_capacity().await, 10);
+    }
+
+    #[test]
+    fn test_pool_builder_missing_llm_client() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let builder = AgentPoolBuilder::new()
+            .max_concurrent(5)
+            .shared_memory(shared_memory)
+            .event_tx(event_tx);
+        
+        let result = builder.build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pool_builder_missing_event_tx() {
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let builder = AgentPoolBuilder::new()
+            .max_concurrent(5)
+            .llm_client(llm_client)
+            .shared_memory(shared_memory);
+        
+        let result = builder.build();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pool_builder_default_max_concurrent() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let builder = AgentPoolBuilder::new()
+            .llm_client(llm_client)
+            .shared_memory(shared_memory)
+            .event_tx(event_tx);
+        
+        let pool = builder.build().unwrap();
+        
+        // Default max_concurrent is 5
+        assert_eq!(pool.available_capacity().await, 5);
     }
 }

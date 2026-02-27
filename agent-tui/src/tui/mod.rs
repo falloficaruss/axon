@@ -35,6 +35,8 @@ use crate::{
 };
 
 use self::components::{Chat, Input, Sidebar};
+use crate::persistence::{SessionStore, MemoryStore};
+use crate::shared::SharedMemory;
 
 /// Main application state
 pub struct App {
@@ -54,6 +56,12 @@ pub struct App {
     orchestrator: Option<Arc<Orchestrator>>,
     /// Agent registry
     agent_registry: Arc<RwLock<AgentRegistry>>,
+    /// Shared memory for agents
+    shared_memory: Arc<SharedMemory>,
+    /// Session store for persistence
+    session_store: Arc<SessionStore>,
+    /// Memory store for persistence
+    memory_store: Arc<MemoryStore>,
     /// Active agent for manual mode
     active_agent: Option<Agent>,
     /// Agent event receiver
@@ -74,6 +82,8 @@ pub struct App {
     last_tick: Instant,
     /// Tick rate
     tick_rate: Duration,
+    /// Last auto-save time
+    last_save: Instant,
     /// Handle to the currently running task (for cancellation)
     current_task_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -134,6 +144,13 @@ impl App {
         let mut agent_registry = AgentRegistry::new();
         crate::agent::agents::initialize_default_agents(&mut agent_registry);
         
+        // Initialize persistence stores
+        let session_store = Arc::new(SessionStore::new(config.session_dir()));
+        let memory_store = Arc::new(MemoryStore::new(config.memory_dir()));
+        
+        // Initialize shared memory
+        let shared_memory = Arc::new(SharedMemory::new());
+        
         // Set default active agent to coder for manual mode
         let active_agent = agent_registry.get("coder").cloned();
         
@@ -144,6 +161,7 @@ impl App {
             Arc::new(Orchestrator::new(
                 client.clone(),
                 agent_registry.clone(),
+                shared_memory.clone(),
                 agent_event_tx.clone(),
                 config.orchestration.max_concurrent_agents,
             ))
@@ -158,6 +176,9 @@ impl App {
             llm_client,
             orchestrator,
             agent_registry,
+            shared_memory,
+            session_store,
+            memory_store,
             active_agent,
             agent_event_rx,
             agent_event_tx,
@@ -168,6 +189,7 @@ impl App {
             event_tx,
             last_tick: Instant::now(),
             tick_rate: Duration::from_millis(250),
+            last_save: Instant::now(),
             current_task_handle: None,
         })
     }
@@ -459,7 +481,16 @@ impl App {
 
     /// Handle tick event
     async fn on_tick(&mut self) -> Result<()> {
-        // TODO: Periodic tasks (auto-save, health checks, etc.)
+        // Handle auto-save
+        let auto_save_interval = Duration::from_secs(self.config.persistence.auto_save_interval);
+        if self.last_save.elapsed() >= auto_save_interval {
+            if !self.session.messages.is_empty() {
+                debug!("Auto-saving session...");
+                let _ = self.session_store.save(&self.session).await;
+            }
+            self.last_save = Instant::now();
+        }
+        
         Ok(())
     }
 
@@ -617,9 +648,12 @@ impl App {
 /mode manual - Enable manual agent selection
 /agent <name> - Select specific agent (manual mode)
 /clear - Clear current session
-/new - Start new session
-/sessions - List saved sessions
-/memory - Open memory manager
+/save <name> - Save current session
+/load <id> - Load session by ID
+/sessions - List all saved sessions
+/remember <key> <value> - Store a value in session memory
+/recall <key> - Retrieve a value from session memory
+/forget <key> - Delete a value from session memory
 /cancel - Cancel the currently running task
 /quit - Exit application"#;
                 let msg = Message::system(help_text);
@@ -734,6 +768,141 @@ impl App {
                 let msg = Message::system("Started new session.");
                 self.session.add_message(msg.clone());
                 self.chat.add_message(msg);
+            }
+            "/save" => {
+                if let Some(name) = args.first() {
+                    self.session.title = name.to_string();
+                }
+                match self.session_store.save(&self.session).await {
+                    Ok(_) => {
+                        let msg = Message::system(&format!("Session '{}' saved successfully.", self.session.title));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    }
+                    Err(e) => {
+                        let msg = Message::system(&format!("Failed to save session: {}", e));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    }
+                }
+            }
+            "/load" => {
+                if let Some(id) = args.first() {
+                    match self.session_store.load(id).await {
+                        Ok(session) => {
+                            self.session = session;
+                            self.chat.clear();
+                            // Reload all messages into chat
+                            for msg in &self.session.messages {
+                                self.chat.add_message(msg.clone());
+                            }
+                            let msg = Message::system(&format!("Session '{}' loaded.", self.session.title));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                        Err(e) => {
+                            let msg = Message::system(&format!("Failed to load session: {}", e));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
+                } else {
+                    let msg = Message::system("Usage: /load <session_id>");
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
+            }
+            "/sessions" => {
+                match self.session_store.list().await {
+                    Ok(sessions) => {
+                        if sessions.is_empty() {
+                            let msg = Message::system("No saved sessions found.");
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        } else {
+                            let mut list = String::from("Saved sessions:\n");
+                            for s in sessions {
+                                list.push_str(&format!("- {}: {} ({} messages, {})\n", 
+                                    s.id, s.title, s.message_count, s.updated_at.format("%Y-%m-%d %H:%M:%S")));
+                            }
+                            let msg = Message::system(&list);
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
+                    Err(e) => {
+                        let msg = Message::system(&format!("Failed to list sessions: {}", e));
+                        self.session.add_message(msg.clone());
+                        self.chat.add_message(msg);
+                    }
+                }
+            }
+            "/remember" => {
+                if args.len() >= 2 {
+                    let key = args[0];
+                    let value = args[1..].join(" ");
+                    match self.memory_store.set(key, &value, "session").await {
+                        Ok(_) => {
+                            let msg = Message::system(&format!("Stored in memory: {} = {}", key, value));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                        Err(e) => {
+                            let msg = Message::system(&format!("Failed to store memory: {}", e));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
+                } else {
+                    let msg = Message::system("Usage: /remember <key> <value>");
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
+            }
+            "/recall" => {
+                if let Some(key) = args.first() {
+                    match self.memory_store.get(key, "session").await {
+                        Ok(Some(value)) => {
+                            let msg = Message::system(&format!("Memory recall: {} = {}", key, value));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                        Ok(None) => {
+                            let msg = Message::system(&format!("Key '{}' not found in memory.", key));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                        Err(e) => {
+                            let msg = Message::system(&format!("Failed to recall memory: {}", e));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
+                } else {
+                    let msg = Message::system("Usage: /recall <key>");
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
+            }
+            "/forget" => {
+                if let Some(key) = args.first() {
+                    match self.memory_store.delete(key, "session").await {
+                        Ok(_) => {
+                            let msg = Message::system(&format!("Forgotten: {}", key));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                        Err(e) => {
+                            let msg = Message::system(&format!("Failed to forget memory: {}", e));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
+                } else {
+                    let msg = Message::system("Usage: /forget <key>");
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
             }
             "/cancel" => {
                 self.cancel_current_task().await?;

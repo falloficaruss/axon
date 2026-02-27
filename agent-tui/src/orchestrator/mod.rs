@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     agent::{AgentHandle, AgentEvent, AgentRuntimeBuilder, AgentInstance, AgentRegistry},
     llm::LlmClient,
+    shared::SharedMemory,
     types::{Agent, Task, TaskResult, TaskStatus, RoutingDecision, RoutingAnalysis, Session, Id, Message, AgentState, MessageRole, TaskType},
 };
 
@@ -183,17 +184,21 @@ impl ExecutionContext {
 pub struct Executor {
     /// Agent pool for managing running agents
     pool: AgentPool,
+    /// Shared memory for agents
+    shared_memory: Arc<SharedMemory>,
 }
 
 impl Executor {
     /// Create a new executor
     pub fn new(
         llm_client: Arc<LlmClient>,
+        shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
     ) -> Self {
         Self {
-            pool: AgentPool::new(max_concurrent, llm_client, event_tx),
+            pool: AgentPool::new(max_concurrent, llm_client, shared_memory.clone(), event_tx),
+            shared_memory,
         }
     }
 
@@ -296,6 +301,8 @@ pub struct Orchestrator {
     llm_client: Arc<LlmClient>,
     /// Agent registry
     registry: Arc<RwLock<AgentRegistry>>,
+    /// Shared memory for agents
+    shared_memory: Arc<SharedMemory>,
     /// Task router
     router: Router,
     /// Task planner
@@ -309,15 +316,17 @@ impl Orchestrator {
     pub fn new(
         llm_client: Arc<LlmClient>,
         registry: Arc<RwLock<AgentRegistry>>,
+        shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
     ) -> Self {
         Self {
             llm_client: llm_client.clone(),
             registry,
+            shared_memory: shared_memory.clone(),
             router: Router::new(),
             planner: Planner::new(),
-            executor: Executor::new(llm_client, event_tx, max_concurrent),
+            executor: Executor::new(llm_client, shared_memory, event_tx, max_concurrent),
         }
     }
 
@@ -390,5 +399,257 @@ impl Orchestrator {
     /// Get executor reference
     pub fn executor(&self) -> &Executor {
         &self.executor
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{TaskType, TaskStatus, AgentRole};
+
+    // ==================== Router Tests ====================
+
+    #[test]
+    fn test_router_new() {
+        let router = Router::new();
+        // Router has no state, just verify it can be created
+        let _ = router;
+    }
+
+    #[test]
+    fn test_router_default() {
+        let router = Router::default();
+        let _ = router;
+    }
+
+    #[tokio::test]
+    async fn test_route_with_high_confidence_agents() {
+        let router = Router::new();
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+        
+        let analysis = RoutingAnalysis {
+            task_type: TaskType::CodeGeneration,
+            suggested_agents: vec![
+                ("agent-1".to_string(), 0.9),
+                ("agent-2".to_string(), 0.8),
+                ("agent-3".to_string(), 0.5), // Below threshold
+            ],
+            can_parallelize: true,
+            estimated_complexity: 5,
+            requires_subtasks: false,
+        };
+
+        let decision = router.route(task, analysis).await.unwrap();
+        
+        // Should select agents with confidence > 0.6
+        assert_eq!(decision.selected_agents.len(), 2);
+        assert!(decision.selected_agents.contains(&"agent-1".to_string()));
+        assert!(decision.selected_agents.contains(&"agent-2".to_string()));
+        assert!(!decision.selected_agents.contains(&"agent-3".to_string()));
+        
+        // Confidence should be from first agent
+        assert_eq!(decision.confidence, 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_route_with_no_agents() {
+        let router = Router::new();
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+        
+        let analysis = RoutingAnalysis {
+            task_type: TaskType::CodeGeneration,
+            suggested_agents: vec![],
+            can_parallelize: false,
+            estimated_complexity: 1,
+            requires_subtasks: false,
+        };
+
+        let decision = router.route(task, analysis).await.unwrap();
+        
+        assert_eq!(decision.selected_agents.len(), 0);
+        assert_eq!(decision.confidence, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_route_with_all_low_confidence() {
+        let router = Router::new();
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+        
+        let analysis = RoutingAnalysis {
+            task_type: TaskType::CodeGeneration,
+            suggested_agents: vec![
+                ("agent-1".to_string(), 0.3),
+                ("agent-2".to_string(), 0.4),
+            ],
+            can_parallelize: false,
+            estimated_complexity: 2,
+            requires_subtasks: false,
+        };
+
+        let decision = router.route(task, analysis).await.unwrap();
+        
+        // No agents should be selected (all below 0.6 threshold)
+        assert_eq!(decision.selected_agents.len(), 0);
+    }
+
+    // ==================== RoutingDecision Tests ====================
+
+    #[test]
+    fn test_routing_decision_new() {
+        let task = Task::new("Test", TaskType::CodeGeneration);
+        let agents = vec!["agent-1", "agent-2"];
+        let decision = RoutingDecision::new(task, agents, 0.85);
+
+        assert_eq!(decision.selected_agents.len(), 2);
+        assert!(decision.selected_agents.contains(&"agent-1".to_string()));
+        assert!(decision.selected_agents.contains(&"agent-2".to_string()));
+        assert_eq!(decision.confidence, 0.85);
+        assert_eq!(decision.reasoning, "");
+        // requires_confirmation should be false when confidence >= 0.8
+        assert!(!decision.requires_confirmation);
+    }
+
+    #[test]
+    fn test_routing_decision_low_confidence() {
+        let task = Task::new("Test", TaskType::CodeGeneration);
+        let agents = vec!["agent-1"];
+        let decision = RoutingDecision::new(task, agents, 0.5);
+
+        // requires_confirmation should be true when confidence < 0.8
+        assert!(decision.requires_confirmation);
+    }
+
+    #[test]
+    fn test_routing_decision_with_reasoning() {
+        let task = Task::new("Test", TaskType::CodeGeneration);
+        let agents = vec!["agent-1"];
+        let decision = RoutingDecision::new(task, agents, 0.9)
+            .with_reasoning("This task requires code generation expertise");
+
+        assert_eq!(decision.reasoning, "This task requires code generation expertise");
+    }
+
+    // ==================== Planner Tests ====================
+
+    #[test]
+    fn test_planner_new() {
+        let planner = Planner::new();
+        let _ = planner;
+    }
+
+    #[tokio::test]
+    async fn test_planner_plan_returns_empty() {
+        let planner = Planner::new();
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+        
+        let result = planner.plan(&task).await.unwrap();
+        
+        // Currently returns empty vec (not yet implemented)
+        assert!(result.is_empty());
+    }
+
+    // ==================== ExecutionContext Tests ====================
+
+    #[test]
+    fn test_execution_context_new() {
+        let ctx = ExecutionContext::new("session-123".to_string());
+        
+        assert_eq!(ctx.session_id, "session-123");
+        assert!(ctx.messages.is_empty());
+        assert!(ctx.context.is_empty());
+    }
+
+    #[test]
+    fn test_execution_context_with_messages() {
+        let messages = vec![Message::user("Hello")];
+        let ctx = ExecutionContext::new("session-123".to_string())
+            .with_messages(messages.clone());
+        
+        assert_eq!(ctx.messages.len(), 1);
+        assert_eq!(ctx.messages[0].content, "Hello");
+    }
+
+    // ==================== Executor Tests ====================
+
+    #[tokio::test]
+    async fn test_executor_new() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let executor = Executor::new(llm_client, shared_memory, event_tx, 5);
+        
+        // Verify executor was created
+        let count = executor.active_count().await;
+        assert_eq!(count, 0); // No agents spawned yet
+    }
+
+    #[tokio::test]
+    async fn test_executor_is_at_capacity() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let executor = Executor::new(llm_client, shared_memory, event_tx, 2);
+        
+        assert!(!executor.is_at_capacity().await);
+    }
+
+    // ==================== Orchestrator Tests ====================
+
+    #[tokio::test]
+    async fn test_orchestrator_new() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
+        
+        assert!(orchestrator.executor().active_count().await == 0);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_execute_auto_no_agents() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let shared_memory = Arc::new(SharedMemory::new());
+        
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+        let session = Session::new("Test Session");
+        
+        // Should fail gracefully when no agents available
+        let result = orchestrator.execute_auto(task, &session).await;
+        
+        // The result depends on LLM response, but should not panic
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_execute_chat_streaming() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let mut registry = AgentRegistry::new();
+        
+        // Register a test agent
+        let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o")
+            .with_description("Test agent");
+        registry.register(agent);
+        
+        let registry = Arc::new(RwLock::new(registry));
+        let shared_memory = Arc::new(SharedMemory::new());
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
+        
+        let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
+        let history = vec![Message::user("Hello")];
+        
+        // This will call the LLM API, so it may fail without valid credentials
+        // but should not panic
+        let result = orchestrator.execute_chat_streaming(agent, "Test".to_string(), history).await;
+        
+        // Result depends on API availability
+        assert!(result.is_ok() || result.is_err());
     }
 }

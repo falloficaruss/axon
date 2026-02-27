@@ -11,6 +11,7 @@ use futures::StreamExt;
 
 use crate::{
     llm::LlmClient,
+    shared::SharedMemory,
     types::{Agent, AgentState, Message, MessageRole, Task, TaskResult, TaskStatus, Id},
 };
 
@@ -148,6 +149,7 @@ pub enum AgentResponse {
 pub struct AgentRuntime {
     agent: Arc<RwLock<Agent>>,
     llm_client: Arc<LlmClient>,
+    shared_memory: Arc<SharedMemory>,
     event_tx: mpsc::Sender<AgentEvent>,
 }
 
@@ -156,11 +158,13 @@ impl AgentRuntime {
     pub fn new(
         agent: Arc<RwLock<Agent>>,
         llm_client: Arc<LlmClient>,
+        shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Self {
         Self {
             agent,
             llm_client,
+            shared_memory,
             event_tx,
         }
     }
@@ -468,6 +472,7 @@ impl AgentInstance {
 pub struct AgentRuntimeBuilder {
     agent: Option<Agent>,
     llm_client: Option<Arc<LlmClient>>,
+    shared_memory: Option<Arc<SharedMemory>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
@@ -477,6 +482,7 @@ impl AgentRuntimeBuilder {
         Self {
             agent: None,
             llm_client: None,
+            shared_memory: None,
             event_tx: None,
         }
     }
@@ -493,6 +499,12 @@ impl AgentRuntimeBuilder {
         self
     }
 
+    /// Set the shared memory
+    pub fn shared_memory(mut self, memory: Arc<SharedMemory>) -> Self {
+        self.shared_memory = Some(memory);
+        self
+    }
+
     /// Set the event sender
     pub fn event_tx(mut self, tx: mpsc::Sender<AgentEvent>) -> Self {
         self.event_tx = Some(tx);
@@ -503,10 +515,11 @@ impl AgentRuntimeBuilder {
     pub async fn spawn(self) -> Result<AgentInstance> {
         let agent = self.agent.ok_or_else(|| anyhow!("Agent not set"))?;
         let llm_client = self.llm_client.ok_or_else(|| anyhow!("LLM client not set"))?;
+        let shared_memory = self.shared_memory.ok_or_else(|| anyhow!("Shared memory not set"))?;
         let event_tx = self.event_tx.ok_or_else(|| anyhow!("Event sender not set"))?;
 
         let agent_arc = Arc::new(RwLock::new(agent));
-        let runtime = AgentRuntime::new(agent_arc.clone(), llm_client, event_tx);
+        let runtime = AgentRuntime::new(agent_arc.clone(), llm_client, shared_memory, event_tx);
         let handle = runtime.spawn().await;
 
         Ok(AgentInstance {
