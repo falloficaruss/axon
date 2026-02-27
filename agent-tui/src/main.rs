@@ -8,7 +8,6 @@ mod tui;
 mod types;
 
 use anyhow::Result;
-use std::io;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 

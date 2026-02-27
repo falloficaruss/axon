@@ -1,7 +1,7 @@
 pub mod agents;
 pub mod runtime;
 
-pub use runtime::{AgentHandle, AgentInstance, AgentRuntime, AgentRuntimeBuilder, AgentCommand, AgentEvent, AgentResponse};
+pub use runtime::{AgentHandle, AgentInstance, AgentRuntimeBuilder, AgentEvent};
 
 use crate::types::{Agent, AgentRole, Capability};
 

@@ -2,18 +2,18 @@
 //!
 //! This module provides Markdown parsing and rendering for the TUI.
 
-use pulldown_cmark::{Event, Parser, Tag, CodeBlockKind, HeadingLevel, TagEnd};
+use pulldown_cmark::{Event, Parser, Tag, CodeBlockKind, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
 /// Parse markdown content into styled lines
-pub fn parse_markdown(content: &str) -> Vec<Line> {
+pub fn parse_markdown(content: &str) -> Vec<Line<'_>> {
     let mut lines: Vec<Line> = Vec::new();
     let mut current_line: Vec<Span> = Vec::new();
     let mut in_code_block = false;
-    let mut in_list = false;
+    let mut _in_list = false;
     let mut list_indent = 0;
 
     let parser = Parser::new(content);
@@ -84,7 +84,7 @@ pub fn parse_markdown(content: &str) -> Vec<Line> {
                     }
                 }
                 Tag::List(_) => {
-                    in_list = true;
+                    _in_list = true;
                     list_indent += 2;
                 }
                 Tag::Item => {
@@ -136,7 +136,7 @@ pub fn parse_markdown(content: &str) -> Vec<Line> {
                     in_code_block = false;
                 }
                 TagEnd::List(_) => {
-                    in_list = false;
+                    _in_list = false;
                     list_indent = list_indent.saturating_sub(2);
                     if !current_line.is_empty() {
                         lines.push(Line::from(current_line.clone()));

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use anyhow::{anyhow, Result};
 
 use crate::{

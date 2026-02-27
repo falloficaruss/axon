@@ -9,8 +9,8 @@ use crossterm::{
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
@@ -25,13 +25,12 @@ use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 
 use crate::{
-    agent::{AgentEvent, AgentInstance, AgentRuntimeBuilder},
-    agent::agents::{CoderAgent, PlannerAgent, ReviewerAgent, TesterAgent, ExplorerAgent, IntegratorAgent},
+    agent::{AgentEvent},
     agent::AgentRegistry,
     config::Config,
     llm::LlmClient,
-    orchestrator::{Orchestrator, ExecutionContext},
-    types::{AppEvent, Id, Message, MessageRole, Session, SessionMode, AgentState, Agent, Task, TaskType},
+    orchestrator::Orchestrator,
+    types::{AppEvent, Message, MessageRole, Session, SessionMode, Agent, Task, TaskType},
 };
 
 use self::components::{Chat, Input, Sidebar};

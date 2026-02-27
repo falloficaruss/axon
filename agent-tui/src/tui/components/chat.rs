@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    layout::{Margin, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
@@ -95,8 +95,7 @@ impl Chat {
                 MessageRole::Agent => {
                     let agent_name = message
                         .agent_id
-                        .as_ref()
-                        .map(|id| id.as_str())
+                        .as_deref()
                         .unwrap_or("Agent");
                     (
                         agent_name,
@@ -183,5 +182,107 @@ impl Chat {
 impl Default for Chat {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{MessageRole, Id};
+
+    #[test]
+    fn test_chat_new() {
+        let chat = Chat::new();
+        assert_eq!(chat.scroll, 0);
+        assert!(chat.auto_scroll);
+        assert!(!chat.is_streaming);
+    }
+
+    #[test]
+    fn test_chat_default() {
+        let chat = Chat::default();
+        assert_eq!(chat.scroll, 0);
+        assert!(chat.auto_scroll);
+        assert!(!chat.is_streaming);
+    }
+
+    #[test]
+    fn test_chat_add_message_with_auto_scroll() {
+        let mut chat = Chat::new();
+        let message = Message::user("Hello");
+
+        chat.add_message(message);
+
+        // Auto-scroll should set scroll to u16::MAX
+        assert_eq!(chat.scroll, u16::MAX);
+    }
+
+    #[test]
+    fn test_chat_set_streaming() {
+        let mut chat = Chat::new();
+        assert!(!chat.is_streaming);
+
+        chat.set_streaming(true);
+        assert!(chat.is_streaming);
+        assert_eq!(chat.scroll, u16::MAX);
+
+        chat.set_streaming(false);
+        assert!(!chat.is_streaming);
+    }
+
+    #[test]
+    fn test_chat_clear() {
+        let mut chat = Chat::new();
+        chat.scroll = 100;
+        chat.auto_scroll = false;
+        chat.is_streaming = true;
+
+        chat.clear();
+
+        assert_eq!(chat.scroll, 0);
+        assert!(!chat.is_streaming);
+    }
+
+    #[test]
+    fn test_chat_scroll_up() {
+        let mut chat = Chat::new();
+        chat.scroll = 50;
+        chat.auto_scroll = true;
+
+        chat.scroll_up(10);
+
+        assert_eq!(chat.scroll, 40);
+        assert!(!chat.auto_scroll);
+    }
+
+    #[test]
+    fn test_chat_scroll_up_at_zero() {
+        let mut chat = Chat::new();
+        chat.scroll = 0;
+
+        chat.scroll_up(10);
+
+        assert_eq!(chat.scroll, 0); // Should not go negative
+    }
+
+    #[test]
+    fn test_chat_scroll_down() {
+        let mut chat = Chat::new();
+        chat.scroll = 50;
+
+        chat.scroll_down(10);
+
+        assert_eq!(chat.scroll, 60);
+    }
+
+    #[test]
+    fn test_chat_scroll_state_update_on_scroll() {
+        let mut chat = Chat::new();
+        chat.scroll = 100;
+
+        chat.scroll_up(20);
+
+        // Verify scroll was updated
+        assert_eq!(chat.scroll, 80);
     }
 }

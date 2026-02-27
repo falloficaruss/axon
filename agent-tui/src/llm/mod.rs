@@ -123,6 +123,7 @@ impl LlmClient {
                     .into()
                 }
                 MessageRole::Agent => {
+                    #[allow(deprecated)]
                     ChatCompletionRequestMessage::Assistant(
                         ChatCompletionRequestAssistantMessage {
                             content: Some(ChatCompletionRequestAssistantMessageContent::Text(
