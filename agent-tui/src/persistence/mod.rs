@@ -128,10 +128,6 @@ impl SessionStore {
         if !path.exists() {
             return Err(anyhow!("Session {} not found", session_id));
         }
-<<<<<<< HEAD
-
-=======
->>>>>>> a9ba5ea (successfully resolved all 39 compiler warnings)
         fs::remove_file(path).await?;
         Ok(())
     }
