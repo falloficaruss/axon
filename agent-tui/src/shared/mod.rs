@@ -79,37 +79,3 @@ impl Default for SharedMemory {
         Self::new()
     }
 }
-
-/// Execution context for tasks
-pub struct ExecutionContext {
-    /// Session ID
-    pub session_id: String,
-    /// Parent task ID (if any)
-    pub parent_task: Option<String>,
-    /// Execution depth
-    pub depth: u32,
-    /// Maximum depth
-    pub max_depth: u32,
-}
-
-impl ExecutionContext {
-    /// Create a new execution context
-    pub fn new(session_id: &str) -> Self {
-        Self {
-            session_id: session_id.to_string(),
-            parent_task: None,
-            depth: 0,
-            max_depth: 5,
-        }
-    }
-
-    /// Create a child context
-    pub fn child(&self, task_id: &str) -> Self {
-        Self {
-            session_id: self.session_id.clone(),
-            parent_task: Some(task_id.to_string()),
-            depth: self.depth + 1,
-            max_depth: self.max_depth,
-        }
-    }
-}

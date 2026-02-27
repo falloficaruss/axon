@@ -19,7 +19,7 @@ use crate::{
 /// Manager for a pool of running agents
 pub struct AgentPool {
     /// Maximum number of concurrent agents
-    max_concurrent: usize,
+    pub max_concurrent: usize,
     /// Currently running agent instances
     agents: Arc<RwLock<HashMap<Id, AgentInstance>>>,
     /// LLM client for agents
@@ -27,7 +27,7 @@ pub struct AgentPool {
     /// Shared memory for agents
     shared_memory: Arc<SharedMemory>,
     /// Event sender for agent events
-    event_tx: mpsc::Sender<AgentEvent>,
+    pub event_tx: mpsc::Sender<AgentEvent>,
 }
 
 impl AgentPool {

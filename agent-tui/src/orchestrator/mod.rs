@@ -7,16 +7,17 @@ pub mod pool;
 pub use pool::AgentPool;
 
 use anyhow::{anyhow, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::{
     agent::{AgentEvent, AgentRegistry},
     llm::LlmClient,
     shared::SharedMemory,
-    types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType, Plan, Subtask},
+    types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType, Plan, Subtask, ExecutionContext},
 };
 
 /// Confidence threshold for agent selection in routing
@@ -279,10 +280,12 @@ impl Planner {
 
                 let mut subtask = Subtask::new(description, task_type);
 
-                // Map agent name to ID
+                // Map agent name to ID and validate existence
                 if let Some(agent_name) = suggested_agent {
                     if let Some(agent) = registry.get(agent_name) {
                         subtask.suggested_agent = Some(agent.id.clone());
+                    } else {
+                        warn!("LLM suggested non-existent agent: {}. Will use routing instead.", agent_name);
                     }
                 }
 
@@ -305,7 +308,7 @@ impl Planner {
         // Resolve dependency indices to actual subtask IDs
         // Collect indices and IDs first to avoid borrow checker issues
         let subtask_ids: Vec<Id> = subtasks.iter().map(|s| s.id.clone()).collect();
-        for (_i, subtask) in subtasks.iter_mut().enumerate() {
+        for subtask in &mut subtasks {
             let mut resolved_deps = Vec::new();
             for dep in &subtask.dependencies {
                 if let Some(idx_str) = dep.strip_prefix("idx:") {
@@ -354,31 +357,6 @@ impl Planner {
     }
 }
 
-/// Execution context for a task
-pub struct ExecutionContext {
-    /// Session ID
-    pub session_id: Id,
-    /// Message history
-    pub messages: Vec<Message>,
-    /// Additional context data
-    pub context: std::collections::HashMap<String, serde_json::Value>,
-}
-
-impl ExecutionContext {
-    pub fn new(session_id: Id) -> Self {
-        Self {
-            session_id,
-            messages: vec![],
-            context: std::collections::HashMap::new(),
-        }
-    }
-
-    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
-        self.messages = messages;
-        self
-    }
-}
-
 /// Task executor that manages agent execution
 pub struct Executor {
     /// Agent pool for managing running agents
@@ -420,7 +398,7 @@ impl Executor {
         };
 
         // Execute the task
-        let result = handle.process_task(task, context.messages).await;
+        let result = handle.process_task(task, context).await;
 
         result.map_err(|e| anyhow!("Task execution failed: {}", e))
     }
@@ -560,41 +538,86 @@ impl Orchestrator {
     /// Execute a plan (sequence of subtasks)
     async fn execute_plan(&self, plan: Plan, session: &Session) -> Result<TaskResult> {
         let mut results: HashMap<Id, TaskResult> = HashMap::new();
-        let mut completed: Vec<Id> = Vec::new();
+        let mut completed: HashSet<Id> = HashSet::new();
+        let mut in_progress: HashSet<Id> = HashSet::new();
+        let mut join_set = JoinSet::new();
 
-        // Execute subtasks in order, respecting dependencies
-        for subtask in &plan.subtasks {
-            // Wait for dependencies
-            for dep_id in &subtask.dependencies {
-                if !completed.contains(dep_id) {
-                    // Find and execute dependency first
-                    if let Some(dep_subtask) = plan.subtasks.iter().find(|s| &s.id == dep_id) {
-                        self.execute_subtask(dep_subtask.clone(), session, &mut results).await?;
-                        completed.push(dep_id.clone());
+        let total_subtasks = plan.subtasks.len();
+        info!("Starting execution of plan with {} subtasks", total_subtasks);
+
+        while completed.len() < total_subtasks {
+            // Find subtasks that are ready to run (not started, all dependencies completed)
+            let ready_subtasks: Vec<Subtask> = plan.subtasks.iter()
+                .filter(|s| !completed.contains(&s.id) && !in_progress.contains(&s.id))
+                .filter(|s| s.dependencies.iter().all(|dep| completed.contains(dep)))
+                .cloned()
+                .collect();
+
+            for subtask in ready_subtasks {
+                let subtask_id = subtask.id.clone();
+                in_progress.insert(subtask_id.clone());
+
+                // Create execution task
+                let orchestrator = Arc::new(self.clone_internal());
+                let session_clone = session.clone();
+                let mut dep_results = HashMap::new();
+                
+                for dep_id in &subtask.dependencies {
+                    if let Some(res) = results.get(dep_id) {
+                        dep_results.insert(dep_id.clone(), res.clone());
+                    }
+                }
+
+                join_set.spawn(async move {
+                    let res = orchestrator.execute_subtask_internal(subtask, &session_clone, dep_results).await;
+                    (subtask_id, res)
+                });
+            }
+
+            // If nothing is running and nothing is ready, but we're not done, we have a cycle or dead end
+            if in_progress.is_empty() && completed.len() < total_subtasks {
+                return Err(anyhow!("Deadlock detected in plan execution: circular dependency or missing tasks"));
+            }
+
+            // Wait for at least one task to complete
+            if let Some(res) = join_set.join_next().await {
+                match res {
+                    Ok((id, Ok(result))) => {
+                        results.insert(id.clone(), result);
+                        completed.insert(id.clone());
+                        in_progress.remove(&id);
+                    }
+                    Ok((id, Err(e))) => {
+                        return Err(anyhow!("Subtask {} failed with error: {}", id, e));
+                    }
+                    Err(e) => {
+                        return Err(anyhow!("Task join error: {}", e));
                     }
                 }
             }
-
-            // Execute this subtask
-            self.execute_subtask(subtask.clone(), session, &mut results).await?;
-            completed.push(subtask.id.clone());
         }
 
-        // Synthesize final result from all subtask results
+        // Synthesize final result
         let mut final_output = String::new();
         let mut all_success = true;
         let mut errors = Vec::new();
 
-        for (id, result) in &results {
-            if result.success {
-                if !final_output.is_empty() {
-                    final_output.push_str("\n\n---\n\n");
-                }
-                final_output.push_str(&format!("**{}**: {}\n", id, result.output));
-            } else {
-                all_success = false;
-                if let Some(err) = &result.error {
-                    errors.push(format!("{}: {}", id, err));
+        // Sort subtasks by creation for consistent output
+        let mut sorted_subtasks = plan.subtasks.clone();
+        sorted_subtasks.sort_by_key(|s| s.created_at);
+
+        for subtask in sorted_subtasks {
+            if let Some(result) = results.get(&subtask.id) {
+                if result.success {
+                    if !final_output.is_empty() {
+                        final_output.push_str("\n\n---\n\n");
+                    }
+                    final_output.push_str(&format!("**{}**: {}\n", subtask.description, result.output));
+                } else {
+                    all_success = false;
+                    if let Some(err) = &result.error {
+                        errors.push(format!("{}: {}", subtask.description, err));
+                    }
                 }
             }
         }
@@ -607,16 +630,33 @@ impl Orchestrator {
         })
     }
 
-    /// Execute a single subtask
-    async fn execute_subtask(
+    /// Internal clone for task spawning
+    fn clone_internal(&self) -> Self {
+        Self {
+            llm_client: self.llm_client.clone(),
+            registry: self.registry.clone(),
+            shared_memory: self.shared_memory.clone(),
+            router: Router::new(),
+            planner: Planner::new(Some(self.llm_client.clone())),
+            executor: Executor::new(
+                self.llm_client.clone(), 
+                self.shared_memory.clone(), 
+                self.executor.pool.event_tx.clone(),
+                self.executor.pool.max_concurrent
+            ),
+        }
+    }
+
+    /// Internal subtask execution for parallel tasks
+    async fn execute_subtask_internal(
         &self,
         subtask: Subtask,
         session: &Session,
-        results: &mut HashMap<Id, TaskResult>,
-    ) -> Result<()> {
+        dependency_results: HashMap<Id, TaskResult>,
+    ) -> Result<TaskResult> {
         info!("Executing subtask: {}", subtask.description);
 
-        // Determine which agent to use
+        // Determine which agent to use, respecting routing confidence
         let agent = if let Some(agent_id) = &subtask.suggested_agent {
             let registry = self.registry.read().await;
             registry.get_by_id(agent_id).cloned()
@@ -627,7 +667,9 @@ impl Orchestrator {
             let analysis = self.router.analyze(self.llm_client.clone(), &registry, &temp_task, session).await?;
             let decision = self.router.route(temp_task, analysis).await?;
 
-            if let Some(agent_id) = decision.selected_agents.first() {
+            // Only pick the agent if confidence is high enough
+            if decision.confidence > AGENT_CONFIDENCE_THRESHOLD && !decision.selected_agents.is_empty() {
+                let agent_id = &decision.selected_agents[0];
                 let registry = self.registry.read().await;
                 registry.get_by_id(agent_id).cloned()
             } else {
@@ -638,32 +680,26 @@ impl Orchestrator {
         if let Some(agent) = agent {
             // Build context with dependency results
             let mut context_messages = session.messages.clone();
-            for dep_id in &subtask.dependencies {
-                if let Some(dep_result) = results.get(dep_id) {
-                    context_messages.push(Message::system(&format!(
-                        "Previous subtask result ({}): {}",
-                        dep_id, dep_result.output
-                    )));
-                }
+            for (dep_id, dep_result) in dependency_results {
+                context_messages.push(Message::system(&format!(
+                    "Previous subtask result (ID: {}): {}",
+                    dep_id, dep_result.output
+                )));
             }
 
-            let context = ExecutionContext::new(session.id.clone())
+            let context = ExecutionContext::new(&session.id)
                 .with_messages(context_messages);
 
             let task = Task::new(&subtask.description, subtask.task_type);
-            let result = self.executor.execute_task(agent, task, context).await?;
-            results.insert(subtask.id.clone(), result);
+            self.executor.execute_task(agent, task, context).await
         } else {
-            let error_result = TaskResult {
+            Ok(TaskResult {
                 success: false,
                 output: String::new(),
-                error: Some("No suitable agent found for subtask".to_string()),
+                error: Some(format!("No high-confidence agent found for subtask: {}", subtask.description)),
                 metadata: Default::default(),
-            };
-            results.insert(subtask.id.clone(), error_result);
+            })
         }
-
-        Ok(())
     }
 
     /// Execute a chat with a specific agent
@@ -916,17 +952,16 @@ mod tests {
 
     #[test]
     fn test_execution_context_new() {
-        let ctx = ExecutionContext::new("session-123".to_string());
+        let ctx = ExecutionContext::new("session-123");
         
         assert_eq!(ctx.session_id, "session-123");
         assert!(ctx.messages.is_empty());
-        assert!(ctx.context.is_empty());
     }
 
     #[test]
     fn test_execution_context_with_messages() {
         let messages = vec![Message::user("Hello")];
-        let ctx = ExecutionContext::new("session-123".to_string())
+        let ctx = ExecutionContext::new("session-123")
             .with_messages(messages.clone());
 
         assert_eq!(ctx.messages.len(), 1);
