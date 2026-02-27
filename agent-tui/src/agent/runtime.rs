@@ -12,7 +12,7 @@ use futures::StreamExt;
 use crate::{
     llm::LlmClient,
     shared::SharedMemory,
-    types::{Agent, AgentState, Message, Task, TaskResult, Id},
+    types::{Agent, AgentState, Message, Task, TaskResult, Id, ExecutionContext},
 };
 
 /// Commands that can be sent to an agent
@@ -21,7 +21,7 @@ pub enum AgentCommand {
     /// Process a task
     ProcessTask {
         task: Box<Task>,
-        context: Vec<Message>,
+        context: ExecutionContext,
     },
     /// Send a chat message to the agent
     Chat {
@@ -90,7 +90,7 @@ impl AgentHandle {
     }
 
     /// Process a task
-    pub async fn process_task(&self, task: Task, context: Vec<Message>) -> Result<TaskResult> {
+    pub async fn process_task(&self, task: Task, context: ExecutionContext) -> Result<TaskResult> {
         match self.send_command(AgentCommand::ProcessTask { task: Box::new(task), context }).await? {
             AgentResponse::TaskCompleted(result) => Ok(result),
             AgentResponse::Error(e) => Err(anyhow!(e)),
@@ -253,7 +253,7 @@ impl AgentRuntime {
         &mut self,
         agent_id: &Id,
         task: Task,
-        context: Vec<Message>,
+        context: ExecutionContext,
     ) -> AgentResponse {
         // Update state to running
         {
@@ -280,7 +280,7 @@ impl AgentRuntime {
         drop(agent);
 
         let mut messages = vec![Message::system(&system_prompt)];
-        messages.extend(context);
+        messages.extend(context.messages);
         messages.push(Message::user(&format!("Task: {}", task.description)));
 
         // Send to LLM
@@ -546,7 +546,8 @@ mod tests {
     #[test]
     fn test_agent_command_process_task() {
         let task = Task::new("Test task", TaskType::CodeGeneration);
-        let context = vec![Message::user("Hello")];
+        let context = ExecutionContext::new("session-123")
+            .with_messages(vec![Message::user("Hello")]);
         let command = AgentCommand::ProcessTask {
             task: Box::new(task.clone()),
             context: context.clone(),
@@ -555,7 +556,7 @@ mod tests {
         match command {
             AgentCommand::ProcessTask { task: t, context: c } => {
                 assert_eq!(t.description, task.description);
-                assert_eq!(c.len(), context.len());
+                assert_eq!(c.messages.len(), 1);
             }
             _ => panic!("Wrong variant"),
         }

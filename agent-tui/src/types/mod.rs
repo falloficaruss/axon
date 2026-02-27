@@ -386,6 +386,7 @@ impl RoutingDecision {
 pub struct ExecutionContext {
     pub session_id: Id,
     pub parent_task: Option<Id>,
+    pub messages: Vec<Message>,
     pub depth: u32,
     pub max_depth: u32,
 }
@@ -395,15 +396,22 @@ impl ExecutionContext {
         Self {
             session_id: session_id.to_string(),
             parent_task: None,
+            messages: vec![],
             depth: 0,
             max_depth: 5,
         }
+    }
+
+    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
+        self.messages = messages;
+        self
     }
 
     pub fn child(&self, task_id: &str) -> Self {
         Self {
             session_id: self.session_id.clone(),
             parent_task: Some(task_id.to_string()),
+            messages: self.messages.clone(),
             depth: self.depth + 1,
             max_depth: self.max_depth,
         }
