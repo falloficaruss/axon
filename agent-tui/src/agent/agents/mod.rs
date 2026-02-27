@@ -1,3 +1,7 @@
+pub mod coder;
+
+pub use coder::{CodeBlock, CodeChange, CoderAgent, FileOperation};
+
 use crate::types::Agent;
 
 /// Built-in agent implementations
@@ -17,30 +21,6 @@ impl PlannerAgent {
                 4. Create a clear execution plan\n\
                 5. Provide reasoning for your decisions\n\n\
                 Be concise but thorough in your planning. Consider dependencies between tasks.",
-            )
-    }
-}
-
-/// Coder agent for code generation
-pub struct CoderAgent;
-
-impl CoderAgent {
-    pub fn create() -> Agent {
-        Agent::new("coder", crate::types::AgentRole::Coder, "gpt-4o")
-            .with_description("Writes and modifies code")
-            .with_capabilities(vec![
-                crate::types::Capability::Code,
-                crate::types::Capability::Refactor,
-                crate::types::Capability::Debug,
-            ])
-            .with_system_prompt(
-                "You are an expert software engineer. Your job is to:\n\
-                1. Write clean, well-documented code\n\
-                2. Follow best practices and coding standards\n\
-                3. Explain your approach before implementing\n\
-                4. Handle errors appropriately\n\
-                5. Write code that is maintainable and testable\n\n\
-                Always provide complete, working code. If you're editing existing code, show the full context."
             )
     }
 }
@@ -128,7 +108,7 @@ impl IntegratorAgent {
 /// Initialize all built-in agents
 pub fn initialize_default_agents(registry: &mut crate::agent::AgentRegistry) {
     registry.register(PlannerAgent::create());
-    registry.register(CoderAgent::create());
+    registry.register(coder::CoderAgent::create());
     registry.register(ReviewerAgent::create());
     registry.register(TesterAgent::create());
     registry.register(ExplorerAgent::create());
