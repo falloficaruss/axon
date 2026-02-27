@@ -1,8 +1,8 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -118,7 +118,7 @@ impl Sidebar {
             .border_style(Style::default().fg(Color::Cyan));
 
         // Placeholder sessions
-        let sessions = vec![
+        let sessions = [
             "Current Session",
             "Previous Session 1",
             "Previous Session 2",
@@ -170,5 +170,70 @@ impl Sidebar {
 impl Default for Sidebar {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sidebar_new() {
+        let sidebar = Sidebar::new();
+        assert_eq!(sidebar.selected_session, 0);
+        assert_eq!(sidebar.selected_agent, 0);
+    }
+
+    #[test]
+    fn test_sidebar_default() {
+        let sidebar = Sidebar::default();
+        assert_eq!(sidebar.selected_session, 0);
+        assert_eq!(sidebar.selected_agent, 0);
+    }
+
+    #[test]
+    fn test_sidebar_previous_session() {
+        let mut sidebar = Sidebar::new();
+        sidebar.selected_session = 5;
+
+        sidebar.previous_session();
+        assert_eq!(sidebar.selected_session, 4);
+
+        sidebar.selected_session = 0;
+        sidebar.previous_session();
+        assert_eq!(sidebar.selected_session, 0); // Should not go negative
+    }
+
+    #[test]
+    fn test_sidebar_next_session() {
+        let mut sidebar = Sidebar::new();
+        sidebar.selected_session = 0;
+
+        sidebar.next_session(5);
+        assert_eq!(sidebar.selected_session, 1);
+
+        sidebar.selected_session = 4;
+        sidebar.next_session(5);
+        assert_eq!(sidebar.selected_session, 4); // Should not exceed max
+    }
+
+    #[test]
+    fn test_sidebar_selected_session() {
+        let mut sidebar = Sidebar::new();
+        sidebar.selected_session = 3;
+
+        assert_eq!(sidebar.selected_session(), 3);
+    }
+
+    #[test]
+    fn test_sidebar_next_session_at_boundary() {
+        let mut sidebar = Sidebar::new();
+        sidebar.selected_session = 0;
+
+        sidebar.next_session(0);
+        assert_eq!(sidebar.selected_session, 0);
+
+        sidebar.next_session(1);
+        assert_eq!(sidebar.selected_session, 0);
     }
 }

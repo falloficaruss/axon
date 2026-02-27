@@ -5,14 +5,14 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::info;
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 
 use crate::{
     llm::LlmClient,
     shared::SharedMemory,
-    types::{Agent, AgentState, Message, MessageRole, Task, TaskResult, TaskStatus, Id},
+    types::{Agent, AgentState, Message, Task, TaskResult, Id},
 };
 
 /// Commands that can be sent to an agent
@@ -20,7 +20,7 @@ use crate::{
 pub enum AgentCommand {
     /// Process a task
     ProcessTask {
-        task: Task,
+        task: Box<Task>,
         context: Vec<Message>,
     },
     /// Send a chat message to the agent
@@ -91,7 +91,7 @@ impl AgentHandle {
 
     /// Process a task
     pub async fn process_task(&self, task: Task, context: Vec<Message>) -> Result<TaskResult> {
-        match self.send_command(AgentCommand::ProcessTask { task, context }).await? {
+        match self.send_command(AgentCommand::ProcessTask { task: Box::new(task), context }).await? {
             AgentResponse::TaskCompleted(result) => Ok(result),
             AgentResponse::Error(e) => Err(anyhow!(e)),
             _ => Err(anyhow!("Unexpected response from agent")),
@@ -230,7 +230,7 @@ impl AgentRuntime {
     ) -> AgentResponse {
         match command {
             AgentCommand::ProcessTask { task, context } => {
-                self.handle_process_task(agent_id, task, context).await
+                self.handle_process_task(agent_id, *task, context).await
             }
             AgentCommand::Chat { message, history } => {
                 self.handle_chat(agent_id, message, history).await
@@ -398,7 +398,7 @@ impl AgentRuntime {
     /// Handle chat message
     async fn handle_chat(
         &mut self,
-        agent_id: &Id,
+        _agent_id: &Id,
         message: String,
         history: Vec<Message>,
     ) -> AgentResponse {
@@ -446,6 +446,7 @@ impl AgentRuntime {
 }
 
 /// Agent instance with its handle
+#[derive(Debug)]
 pub struct AgentInstance {
     pub handle: AgentHandle,
     pub agent: Arc<RwLock<Agent>>,
@@ -532,5 +533,341 @@ impl AgentRuntimeBuilder {
 impl Default for AgentRuntimeBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AgentRole, TaskType};
+
+    // ==================== AgentCommand Tests ====================
+
+    #[test]
+    fn test_agent_command_process_task() {
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+        let context = vec![Message::user("Hello")];
+        let command = AgentCommand::ProcessTask {
+            task: Box::new(task.clone()),
+            context: context.clone(),
+        };
+
+        match command {
+            AgentCommand::ProcessTask { task: t, context: c } => {
+                assert_eq!(t.description, task.description);
+                assert_eq!(c.len(), context.len());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_command_chat() {
+        let command = AgentCommand::Chat {
+            message: "Hello".to_string(),
+            history: vec![Message::user("Hi")],
+        };
+
+        match command {
+            AgentCommand::Chat { message, history } => {
+                assert_eq!(message, "Hello");
+                assert_eq!(history.len(), 1);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_command_stream_chat() {
+        let command = AgentCommand::StreamChat {
+            message: "Stream me".to_string(),
+            history: vec![],
+        };
+
+        match command {
+            AgentCommand::StreamChat { message, history } => {
+                assert_eq!(message, "Stream me");
+                assert!(history.is_empty());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_command_get_state() {
+        let command = AgentCommand::GetState;
+        match command {
+            AgentCommand::GetState => {}
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_command_shutdown() {
+        let command = AgentCommand::Shutdown;
+        match command {
+            AgentCommand::Shutdown => {}
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    // ==================== AgentEvent Tests ====================
+
+    #[test]
+    fn test_agent_event_started() {
+        let event = AgentEvent::Started {
+            agent_id: "agent-1".to_string(),
+        };
+
+        match event {
+            AgentEvent::Started { agent_id } => {
+                assert_eq!(agent_id, "agent-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_event_completed() {
+        let result = TaskResult {
+            success: true,
+            output: "Done".to_string(),
+            error: None,
+            metadata: Default::default(),
+        };
+
+        let event = AgentEvent::Completed {
+            agent_id: "agent-1".to_string(),
+            result: result.clone(),
+        };
+
+        match event {
+            AgentEvent::Completed { agent_id, result: r } => {
+                assert_eq!(agent_id, "agent-1");
+                assert_eq!(r.output, "Done");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_event_message() {
+        let event = AgentEvent::Message {
+            agent_id: "agent-1".to_string(),
+            content: "Streaming...".to_string(),
+        };
+
+        match event {
+            AgentEvent::Message { agent_id, content } => {
+                assert_eq!(agent_id, "agent-1");
+                assert_eq!(content, "Streaming...");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_event_error() {
+        let event = AgentEvent::Error {
+            agent_id: "agent-1".to_string(),
+            error: "Something went wrong".to_string(),
+        };
+
+        match event {
+            AgentEvent::Error { agent_id, error } => {
+                assert_eq!(agent_id, "agent-1");
+                assert_eq!(error, "Something went wrong");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_event_state_changed() {
+        let event = AgentEvent::StateChanged {
+            agent_id: "agent-1".to_string(),
+            state: AgentState::Running,
+        };
+
+        match event {
+            AgentEvent::StateChanged { agent_id, state } => {
+                assert_eq!(agent_id, "agent-1");
+                assert_eq!(state, AgentState::Running);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    // ==================== AgentResponse Tests ====================
+
+    #[test]
+    fn test_agent_response_task_completed() {
+        let result = TaskResult {
+            success: true,
+            output: "Done".to_string(),
+            error: None,
+            metadata: Default::default(),
+        };
+
+        let response = AgentResponse::TaskCompleted(result.clone());
+
+        match response {
+            AgentResponse::TaskCompleted(r) => {
+                assert!(r.success);
+                assert_eq!(r.output, "Done");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_response_chat_response() {
+        let response = AgentResponse::ChatResponse("Hello".to_string());
+
+        match response {
+            AgentResponse::ChatResponse(content) => {
+                assert_eq!(content, "Hello");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_response_state() {
+        let response = AgentResponse::State(AgentState::Idle);
+
+        match response {
+            AgentResponse::State(state) => {
+                assert_eq!(state, AgentState::Idle);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_response_error() {
+        let response = AgentResponse::Error("Error occurred".to_string());
+
+        match response {
+            AgentResponse::Error(msg) => {
+                assert_eq!(msg, "Error occurred");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_agent_response_ack() {
+        let response = AgentResponse::Ack;
+
+        match response {
+            AgentResponse::Ack => {}
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    // ==================== AgentRuntimeBuilder Tests ====================
+
+    #[test]
+    fn test_agent_runtime_builder_new() {
+        let builder = AgentRuntimeBuilder::new();
+        let _ = builder;
+    }
+
+    #[test]
+    fn test_agent_runtime_builder_default() {
+        let builder = AgentRuntimeBuilder::default();
+        let _ = builder;
+    }
+
+    #[test]
+    fn test_agent_runtime_builder_fluent_interface() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o")
+            .with_description("Test agent");
+
+        let builder = AgentRuntimeBuilder::new()
+            .agent(agent)
+            .llm_client(llm_client)
+            .shared_memory(shared_memory)
+            .event_tx(event_tx);
+
+        // Builder should be usable after each method call
+        let _ = builder;
+    }
+
+    #[tokio::test]
+    async fn test_agent_runtime_builder_spawn_missing_agent() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+
+        let builder = AgentRuntimeBuilder::new()
+            .llm_client(llm_client)
+            .shared_memory(shared_memory)
+            .event_tx(event_tx);
+
+        let result = builder.spawn().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Agent not set"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_runtime_builder_spawn_missing_llm_client() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let shared_memory = Arc::new(SharedMemory::new());
+        let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
+
+        let builder = AgentRuntimeBuilder::new()
+            .agent(agent)
+            .shared_memory(shared_memory)
+            .event_tx(event_tx);
+
+        let result = builder.spawn().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("LLM client not set"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_runtime_builder_spawn_missing_shared_memory() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
+
+        let builder = AgentRuntimeBuilder::new()
+            .agent(agent)
+            .llm_client(llm_client)
+            .event_tx(event_tx);
+
+        let result = builder.spawn().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Shared memory not set"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_runtime_builder_spawn_missing_event_tx() {
+        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let shared_memory = Arc::new(SharedMemory::new());
+        let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
+
+        let builder = AgentRuntimeBuilder::new()
+            .agent(agent)
+            .llm_client(llm_client)
+            .shared_memory(shared_memory);
+
+        let result = builder.spawn().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Event sender not set"));
+    }
+
+    // ==================== AgentInstance Tests ====================
+
+    #[test]
+    fn test_agent_instance_id() {
+        // We can't easily test AgentInstance without spawning a full runtime
+        // but we can verify the struct exists and has the expected fields
+        let _ = std::mem::size_of::<AgentInstance>();
     }
 }

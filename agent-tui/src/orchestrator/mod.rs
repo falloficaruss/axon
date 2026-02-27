@@ -4,18 +4,18 @@
 
 pub mod pool;
 
-pub use pool::{AgentPool, AgentPoolBuilder};
+pub use pool::AgentPool;
 
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use crate::{
-    agent::{AgentHandle, AgentEvent, AgentRuntimeBuilder, AgentInstance, AgentRegistry},
+    agent::{AgentEvent, AgentRegistry},
     llm::LlmClient,
     shared::SharedMemory,
-    types::{Agent, Task, TaskResult, TaskStatus, RoutingDecision, RoutingAnalysis, Session, Id, Message, AgentState, MessageRole, TaskType},
+    types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType},
 };
 
 /// Confidence threshold for agent selection in routing
@@ -152,7 +152,7 @@ impl Planner {
     }
 
     /// Decompose a task into subtasks
-    pub async fn plan(&self, task: &Task) -> Result<Vec<Task>> {
+    pub async fn plan(&self, _task: &Task) -> Result<Vec<Task>> {
         // TODO: Implement task decomposition
         Ok(vec![])
     }

@@ -1,7 +1,6 @@
 use crate::types::Agent;
 
 /// Built-in agent implementations
-
 /// Planner agent for task decomposition
 pub struct PlannerAgent;
 

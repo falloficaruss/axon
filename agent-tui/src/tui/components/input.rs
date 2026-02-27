@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    layout::{Alignment, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
     Frame,
@@ -185,5 +185,224 @@ impl Input {
 impl Default for Input {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_input_new() {
+        let input = Input::new();
+        assert!(input.content.is_empty());
+        assert_eq!(input.cursor, 0);
+        assert!(input.history.is_empty());
+        assert!(input.history_index.is_none());
+        assert!(input.saved_input.is_empty());
+    }
+
+    #[test]
+    fn test_input_default() {
+        let input = Input::default();
+        assert!(input.content.is_empty());
+        assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn test_input_get_content() {
+        let mut input = Input::new();
+        input.content = "Hello".to_string();
+        assert_eq!(input.get_content(), "Hello");
+    }
+
+    #[test]
+    fn test_input_is_empty() {
+        let mut input = Input::new();
+        assert!(input.is_empty());
+
+        input.insert_char('a');
+        assert!(!input.is_empty());
+    }
+
+    #[test]
+    fn test_input_insert_char() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+
+        assert_eq!(input.content, "Hi");
+        assert_eq!(input.cursor, 2);
+    }
+
+    #[test]
+    fn test_input_insert_char_at_beginning() {
+        let mut input = Input::new();
+        input.insert_char('b');
+        input.insert_char('a');
+        input.cursor = 0;
+        input.insert_char('X');
+
+        assert_eq!(input.content, "Xba");
+        assert_eq!(input.cursor, 1);
+    }
+
+    #[test]
+    fn test_input_delete_char() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.delete_char();
+
+        assert_eq!(input.content, "H");
+        assert_eq!(input.cursor, 1);
+    }
+
+    #[test]
+    fn test_input_delete_char_at_beginning() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.cursor = 0;
+        input.delete_char(); // Should do nothing
+
+        assert_eq!(input.content, "Hi");
+        assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn test_input_move_cursor_left() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.move_cursor_left();
+
+        assert_eq!(input.cursor, 1);
+
+        input.move_cursor_left();
+        assert_eq!(input.cursor, 0);
+
+        input.move_cursor_left(); // Should not go negative
+        assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn test_input_move_cursor_right() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.cursor = 0;
+
+        input.move_cursor_right();
+        assert_eq!(input.cursor, 1);
+
+        input.move_cursor_right();
+        assert_eq!(input.cursor, 2);
+
+        input.move_cursor_right(); // Should not exceed length
+        assert_eq!(input.cursor, 2);
+    }
+
+    #[test]
+    fn test_input_clear() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.history.push("test".to_string());
+        input.history_index = Some(0);
+        input.saved_input = "saved".to_string();
+
+        input.clear();
+
+        assert!(input.content.is_empty());
+        assert_eq!(input.cursor, 0);
+        assert!(input.history_index.is_none());
+        assert!(input.saved_input.is_empty());
+        assert_eq!(input.history.len(), 1); // History is preserved
+    }
+
+    #[test]
+    fn test_input_previous_history_empty() {
+        let mut input = Input::new();
+        input.previous_history(); // Should do nothing
+
+        assert!(input.content.is_empty());
+        assert!(input.history_index.is_none());
+    }
+
+    #[test]
+    fn test_input_previous_history() {
+        let mut input = Input::new();
+        input.history.push("first".to_string());
+        input.history.push("second".to_string());
+
+        input.previous_history();
+
+        assert_eq!(input.content, "second");
+        assert_eq!(input.history_index, Some(1));
+    }
+
+    #[test]
+    fn test_input_next_history() {
+        let mut input = Input::new();
+        input.history.push("first".to_string());
+        input.history.push("second".to_string());
+        input.history_index = Some(0);
+        input.content = "temp".to_string();
+
+        input.next_history();
+
+        assert_eq!(input.content, "second");
+        assert_eq!(input.history_index, Some(1));
+    }
+
+    #[test]
+    fn test_input_next_history_restore() {
+        let mut input = Input::new();
+        input.history.push("first".to_string());
+        input.history_index = Some(0);
+        input.saved_input = "original".to_string();
+        input.content = "from history".to_string();
+
+        input.next_history();
+
+        assert_eq!(input.content, "original");
+        assert!(input.history_index.is_none());
+    }
+
+    #[test]
+    fn test_input_add_to_history_empty() {
+        let mut input = Input::new();
+        input.add_to_history("");
+        assert!(input.history.is_empty());
+    }
+
+    #[test]
+    fn test_input_add_to_history_no_duplicates() {
+        let mut input = Input::new();
+        input.history.push("test".to_string());
+        input.add_to_history("test");
+        input.add_to_history("test");
+
+        assert_eq!(input.history.len(), 1);
+    }
+
+    #[test]
+    fn test_input_add_to_history() {
+        let mut input = Input::new();
+        input.add_to_history("first");
+        input.add_to_history("second");
+
+        assert_eq!(input.history.len(), 2);
+        assert_eq!(input.history[0], "first");
+        assert_eq!(input.history[1], "second");
+    }
+
+    #[test]
+    fn test_input_autocomplete() {
+        let mut input = Input::new();
+        input.autocomplete();
+        assert_eq!(input.content, "\t");
+        assert_eq!(input.cursor, 1);
     }
 }
