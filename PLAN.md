@@ -4,7 +4,7 @@ A Rust-based TUI for multi-agent AI orchestration with dynamic task routing, par
 
 ## Current Progress
 
-**Last Updated:** February 15, 2026
+**Last Updated:** February 27, 2026
 
 ### ✅ Completed
 
@@ -23,12 +23,20 @@ A Rust-based TUI for multi-agent AI orchestration with dynamic task routing, par
 - [x] Sidebar component with agent status
 - [x] Placeholder modules for agent, llm, orchestrator, persistence, shared
 
-### 🚧 In Progress
-- [ ] Cargo build (dependencies downloading)
+#### Phase 1.5: Bug Fixes & Improvements
+- [x] Fixed input mode glitch (command mode entry)
+- [x] Fixed agent selector to use dynamic AgentRegistry
+- [x] Added task cancellation mechanism (Ctrl+X, /cancel)
+- [x] Implemented streaming UI with real-time updates
+- [x] Implemented markdown rendering with pulldown-cmark
 
-### ⏳ Pending
+### 🚧 In Progress
 - [ ] OpenAI LLM client integration
 - [ ] Agent runtime implementation
+
+### ⏳ Pending
+
+#### Core Features
 - [ ] Built-in agents (Coder, Reviewer, Tester, Explorer, Planner)
 - [ ] Dynamic router
 - [ ] User override system
@@ -38,6 +46,16 @@ A Rust-based TUI for multi-agent AI orchestration with dynamic task routing, par
 - [ ] Memory management UI
 - [ ] Agent flow visualization
 - [ ] Themes and advanced configuration
+
+#### Testing & Quality
+- [ ] Unit tests for orchestrator module
+- [ ] Unit tests for agent runtime
+- [ ] Unit tests for TUI components
+- [ ] Integration tests for agent workflows
+- [ ] Mock LLM client for testing
+- [ ] End-to-end tests
+- [ ] Test coverage reporting
+- [ ] CI/CD pipeline with automated testing
 
 ## Architecture Overview
 
