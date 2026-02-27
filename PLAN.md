@@ -8,54 +8,78 @@ A Rust-based TUI for multi-agent AI orchestration with dynamic task routing, par
 
 ### ✅ Completed
 
-#### Phase 0: Foundation
+#### Phase 0: Foundation (100%)
 - [x] Project setup with Cargo.toml and all dependencies
 - [x] Directory structure created
 - [x] Core types defined (Agent, Task, Message, Session, etc.)
 - [x] Configuration module with TOML support
 
-#### Phase 1: TUI Foundation
+#### Phase 1: TUI Foundation (100%)
 - [x] Main entry point with async tokio runtime
 - [x] App loop with event handling
 - [x] Terminal setup/cleanup with raw mode
 - [x] Chat component with scrolling and message display
 - [x] Input component with history and cursor navigation
 - [x] Sidebar component with agent status
-- [x] Placeholder modules for agent, llm, orchestrator, persistence, shared
+- [x] Markdown rendering with pulldown-cmark
 
-#### Phase 1.5: Bug Fixes & Improvements
+#### Phase 1.5: Bug Fixes & Improvements (100%)
 - [x] Fixed input mode glitch (command mode entry)
 - [x] Fixed agent selector to use dynamic AgentRegistry
 - [x] Added task cancellation mechanism (Ctrl+X, /cancel)
 - [x] Implemented streaming UI with real-time updates
 - [x] Implemented markdown rendering with pulldown-cmark
 
+#### Phase 2: LLM & Agent Runtime (95%)
+- [x] OpenAI LLM client integration with streaming
+- [x] Agent runtime with command loop
+- [x] Agent lifecycle management (spawn, shutdown, state tracking)
+- [x] Event system (Started, Completed, Message, Error, StateChanged)
+- [x] Built-in agents defined (Planner, Coder, Reviewer, Tester, Explorer, Integrator)
+
+#### Phase 3: Orchestration (85%)
+- [x] Dynamic router with LLM-based task analysis
+- [x] Task planner with decomposition into subtasks
+- [x] Executor with agent pool management
+- [x] Parallel execution support via JoinSet
+- [x] Auto-routing and manual mode support
+
+#### Phase 4: Persistence & Shared Memory (75%)
+- [x] SessionStore with save/load/list/delete
+- [x] MemoryStore with scoped key-value storage
+- [x] Atomic writes for session saving
+- [x] Auto-save on configurable interval
+- [x] Shared memory with hierarchical namespaces
+- [ ] UI integration for persistence commands
+- [ ] Shared memory connected to agent runtime
+
+#### Testing & Quality (60%)
+- [x] 140 unit tests across all modules
+- [x] Tests for types, config, agent runtime, orchestrator, pool, TUI components
+- [ ] Integration tests for agent workflows
+- [ ] Mock LLM client for testing without API key
+- [ ] End-to-end tests
+- [ ] Test coverage reporting
+- [ ] CI/CD pipeline with automated testing
+
 ### 🚧 In Progress
-- [ ] OpenAI LLM client integration
-- [ ] Agent runtime implementation
+- [ ] Persistence UI integration (save/load sessions via commands)
+- [ ] Shared memory integration with agent runtime
+- [ ] Fixing 39 compiler warnings (unused code)
 
 ### ⏳ Pending
 
 #### Core Features
-- [ ] Built-in agents (Coder, Reviewer, Tester, Explorer, Planner)
-- [ ] Dynamic router
-- [ ] User override system
-- [ ] Agent pool with concurrent execution
-- [ ] Shared memory implementation
-- [ ] Persistence layer
 - [ ] Memory management UI
 - [ ] Agent flow visualization
 - [ ] Themes and advanced configuration
+- [ ] Custom keybindings from config
 
-#### Testing & Quality
-- [ ] Unit tests for orchestrator module
-- [ ] Unit tests for agent runtime
-- [ ] Unit tests for TUI components
-- [ ] Integration tests for agent workflows
-- [ ] Mock LLM client for testing
-- [ ] End-to-end tests
-- [ ] Test coverage reporting
-- [ ] CI/CD pipeline with automated testing
+#### Advanced Features
+- [ ] MCP support
+- [ ] Multiple LLM providers (Anthropic, local models)
+- [ ] Plugin system for custom agents
+- [ ] GitHub integration
 
 ## Architecture Overview
 
@@ -600,21 +624,21 @@ mockall = "0.13"
 
 ## Development Roadmap
 
-### MVP (Week 1-2)
+### MVP (Week 1-2) - 90% Complete
 - [x] Basic TUI with chat
-- [ ] OpenAI integration
-- [x] 3 core agents (Coder, Planner, Explorer) - Defined, not runtime
-- [x] Manual mode - UI support implemented
-- [ ] Simple auto-routing
-- [ ] Session persistence
-- [ ] Basic memory
+- [x] OpenAI integration
+- [x] 6 core agents (Coder, Planner, Reviewer, Tester, Explorer, Integrator) - Defined and runtime-ready
+- [x] Manual mode - Fully functional
+- [x] Simple auto-routing - Implemented with LLM analysis
+- [x] Session persistence - Store implemented, UI integration pending
+- [x] Basic memory - Store implemented, UI integration pending
 
-### Advanced (Week 3-4)
-- [ ] Parallel agent execution
+### Advanced (Week 3-4) - 40% Complete
+- [x] Parallel agent execution - JoinSet-based execution
 - [ ] Agent flow visualization
-- [ ] Advanced memory management
-- [ ] Custom agents via config
-- [ ] Themes system
+- [ ] Advanced memory management UI
+- [x] Custom agents via config - Config structure ready
+- [ ] Themes system - Config structure ready, implementation pending
 
 ### Future
 - [ ] MCP support

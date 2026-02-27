@@ -648,10 +648,13 @@ impl App {
 /mode auto - Enable automatic agent routing
 /mode manual - Enable manual agent selection
 /agent <name> - Select specific agent (manual mode)
+/agents - List all available agents
 /clear - Clear current session
-/save <name> - Save current session
-/load <id> - Load session by ID
+/new - Start a new session
+/save <name> - Save current session to file
+/load <id> - Load a session by ID
 /sessions - List all saved sessions
+/delete <id> - Delete a session by ID
 /remember <key> <value> - Store a value in session memory
 /recall <key> - Retrieve a value from session memory
 /forget <key> - Delete a value from session memory
@@ -771,12 +774,12 @@ impl App {
                 self.chat.add_message(msg);
             }
             "/save" => {
-                if let Some(name) = args.first() {
-                    self.session.title = name.to_string();
+                if !args.is_empty() {
+                    self.session.title = args.join(" ");
                 }
                 match self.session_store.save(&self.session).await {
                     Ok(_) => {
-                        let msg = Message::system(&format!("Session '{}' saved successfully.", self.session.title));
+                        let msg = Message::system(&format!("Session '{}' saved successfully (ID: {}).", self.session.title, self.session.id));
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     }
@@ -836,6 +839,26 @@ impl App {
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     }
+                }
+            }
+            "/delete" => {
+                if let Some(id) = args.first() {
+                    match self.session_store.delete(id).await {
+                        Ok(_) => {
+                            let msg = Message::system(&format!("Session '{}' deleted successfully.", id));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                        Err(e) => {
+                            let msg = Message::system(&format!("Failed to delete session: {}", e));
+                            self.session.add_message(msg.clone());
+                            self.chat.add_message(msg);
+                        }
+                    }
+                } else {
+                    let msg = Message::system("Usage: /delete <session_id>");
+                    self.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
                 }
             }
             "/remember" => {
