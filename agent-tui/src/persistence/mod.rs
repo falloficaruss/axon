@@ -2,13 +2,13 @@
 //!
 //! This module handles saving and loading sessions and memory.
 
+use crate::types::{Id, Session};
 use anyhow::{anyhow, Result};
-use crate::types::{Session, Id};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use serde::{Serialize, Deserialize};
 use tracing::debug;
-use chrono::{DateTime, Utc};
 
 /// Metadata for a session (used for listing)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,23 +44,43 @@ impl SessionStore {
         self.base_path.join(format!("{}.json", session_id))
     }
 
+    /// Validate that a session ID is safe to use as a filename.
+    fn validate_session_id(session_id: &str) -> Result<()> {
+        if session_id.is_empty() {
+            return Err(anyhow!("Session ID cannot be empty"));
+        }
+
+        if !session_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        {
+            return Err(anyhow!(
+                "Invalid session ID '{}': only ASCII letters, numbers, '-' and '_' are allowed",
+                session_id
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Save a session (uses atomic write to prevent corruption)
     pub async fn save(&self, session: &Session) -> Result<()> {
         self.ensure_dir().await?;
         let path = self.session_path(&session.id);
         let json = serde_json::to_string_pretty(session)?;
-        
+
         // Write to temp file first, then rename for atomic operation
         let temp_path = path.with_extension("json.tmp");
         fs::write(&temp_path, &json).await?;
         fs::rename(&temp_path, &path).await?;
-        
+
         debug!("Saved session {} to {:?}", session.id, self.base_path);
         Ok(())
     }
 
     /// Load a session
     pub async fn load(&self, session_id: &str) -> Result<Session> {
+        Self::validate_session_id(session_id)?;
         let path = self.session_path(session_id);
         if !path.exists() {
             return Err(anyhow!("Session {} not found", session_id));
@@ -100,10 +120,13 @@ impl SessionStore {
 
     /// Delete a session
     pub async fn delete(&self, session_id: &str) -> Result<()> {
+        Self::validate_session_id(session_id)?;
         let path = self.session_path(session_id);
-        if path.exists() {
-            fs::remove_file(path).await?;
+        if !path.exists() {
+            return Err(anyhow!("Session {} not found", session_id));
         }
+
+        fs::remove_file(path).await?;
         Ok(())
     }
 }
@@ -165,7 +188,7 @@ impl MemoryStore {
     /// List all keys in a scope
     pub async fn list(&self, scope: &str) -> Result<Vec<String>> {
         let scope_dir = self.ensure_dir(scope).await?;
-        
+
         let mut keys = Vec::new();
         let mut entries = fs::read_dir(scope_dir).await?;
 
@@ -179,5 +202,64 @@ impl MemoryStore {
         }
 
         Ok(keys)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionStore;
+    use tempfile::tempdir;
+    use tokio::fs;
+
+    #[tokio::test]
+    async fn delete_returns_error_for_missing_session() {
+        let dir = tempdir().expect("create tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+
+        let err = store
+            .delete("missing_session")
+            .await
+            .expect_err("missing session should be reported as an error");
+
+        assert!(
+            err.to_string().contains("not found"),
+            "expected not found error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_path_traversal_session_id() {
+        let dir = tempdir().expect("create tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+
+        let err = store
+            .delete("../escape")
+            .await
+            .expect_err("path traversal session IDs must be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid session ID"),
+            "expected invalid ID error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_existing_session_file() {
+        let dir = tempdir().expect("create tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let session_path = dir.path().join("valid_session.json");
+        fs::write(&session_path, "{}")
+            .await
+            .expect("write test session");
+
+        store
+            .delete("valid_session")
+            .await
+            .expect("existing session should delete successfully");
+
+        assert!(
+            !session_path.exists(),
+            "expected session file to be deleted"
+        );
     }
 }
