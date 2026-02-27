@@ -18,6 +18,9 @@ use crate::{
     types::{Agent, Task, TaskResult, TaskStatus, RoutingDecision, RoutingAnalysis, Session, Id, Message, AgentState, MessageRole, TaskType},
 };
 
+/// Confidence threshold for agent selection in routing
+pub const AGENT_CONFIDENCE_THRESHOLD: f32 = 0.6;
+
 /// Dynamic task router
 pub struct Router;
 
@@ -119,13 +122,13 @@ impl Router {
         // Simple routing logic: pick agents with high confidence
         let selected_agents: Vec<Id> = analysis.suggested_agents
             .iter()
-            .filter(|(_, conf)| *conf > 0.6)
+            .filter(|(_, conf)| *conf > AGENT_CONFIDENCE_THRESHOLD)
             .map(|(id, _)| id.clone())
             .collect();
-            
+
         let mut decision = RoutingDecision::new(task, vec![], 0.0);
         decision.selected_agents = selected_agents;
-        
+
         if !analysis.suggested_agents.is_empty() {
             decision.confidence = analysis.suggested_agents[0].1;
         }
@@ -426,7 +429,7 @@ mod tests {
     async fn test_route_with_high_confidence_agents() {
         let router = Router::new();
         let task = Task::new("Test task", TaskType::CodeGeneration);
-        
+
         let analysis = RoutingAnalysis {
             task_type: TaskType::CodeGeneration,
             suggested_agents: vec![
@@ -440,13 +443,13 @@ mod tests {
         };
 
         let decision = router.route(task, analysis).await.unwrap();
-        
-        // Should select agents with confidence > 0.6
+
+        // Should select agents with confidence > AGENT_CONFIDENCE_THRESHOLD (0.6)
         assert_eq!(decision.selected_agents.len(), 2);
         assert!(decision.selected_agents.contains(&"agent-1".to_string()));
         assert!(decision.selected_agents.contains(&"agent-2".to_string()));
         assert!(!decision.selected_agents.contains(&"agent-3".to_string()));
-        
+
         // Confidence should be from first agent
         assert_eq!(decision.confidence, 0.9);
     }
@@ -474,7 +477,7 @@ mod tests {
     async fn test_route_with_all_low_confidence() {
         let router = Router::new();
         let task = Task::new("Test task", TaskType::CodeGeneration);
-        
+
         let analysis = RoutingAnalysis {
             task_type: TaskType::CodeGeneration,
             suggested_agents: vec![
@@ -487,8 +490,8 @@ mod tests {
         };
 
         let decision = router.route(task, analysis).await.unwrap();
-        
-        // No agents should be selected (all below 0.6 threshold)
+
+        // No agents should be selected (all below AGENT_CONFIDENCE_THRESHOLD)
         assert_eq!(decision.selected_agents.len(), 0);
     }
 
@@ -615,16 +618,17 @@ mod tests {
         let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
-        
+
         let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
         let task = Task::new("Test task", TaskType::CodeGeneration);
         let session = Session::new("Test Session");
-        
+
         // Should fail gracefully when no agents available
+        // The LLM-based routing will fail without agents registered
         let result = orchestrator.execute_auto(task, &session).await;
         
-        // The result depends on LLM response, but should not panic
-        assert!(result.is_ok() || result.is_err());
+        // Expect an error since no agents are registered for routing
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -632,24 +636,21 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::channel(10);
         let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let mut registry = AgentRegistry::new();
-        
+
         // Register a test agent
         let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o")
             .with_description("Test agent");
         registry.register(agent);
-        
+
         let registry = Arc::new(RwLock::new(registry));
         let shared_memory = Arc::new(SharedMemory::new());
         let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
-        
+
         let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
         let history = vec![Message::user("Hello")];
-        
-        // This will call the LLM API, so it may fail without valid credentials
-        // but should not panic
-        let result = orchestrator.execute_chat_streaming(agent, "Test".to_string(), history).await;
-        
-        // Result depends on API availability
-        assert!(result.is_ok() || result.is_err());
+
+        // This will call the LLM API - the result depends on API availability
+        // The test verifies the function completes without panicking
+        let _ = orchestrator.execute_chat_streaming(agent, "Test".to_string(), history).await;
     }
 }

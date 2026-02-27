@@ -486,11 +486,13 @@ impl App {
         if self.last_save.elapsed() >= auto_save_interval {
             if !self.session.messages.is_empty() {
                 debug!("Auto-saving session...");
-                let _ = self.session_store.save(&self.session).await;
+                if let Err(e) = self.session_store.save(&self.session).await {
+                    error!("Failed to auto-save session: {}", e);
+                }
             }
             self.last_save = Instant::now();
         }
-        
+
         Ok(())
     }
 

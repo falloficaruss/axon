@@ -7,7 +7,7 @@ use crate::types::{Session, Id};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use serde::{Serialize, Deserialize};
-use tracing::{info, error, debug};
+use tracing::debug;
 use chrono::{DateTime, Utc};
 
 /// Metadata for a session (used for listing)
@@ -44,12 +44,17 @@ impl SessionStore {
         self.base_path.join(format!("{}.json", session_id))
     }
 
-    /// Save a session
+    /// Save a session (uses atomic write to prevent corruption)
     pub async fn save(&self, session: &Session) -> Result<()> {
         self.ensure_dir().await?;
         let path = self.session_path(&session.id);
         let json = serde_json::to_string_pretty(session)?;
-        fs::write(path, json).await?;
+        
+        // Write to temp file first, then rename for atomic operation
+        let temp_path = path.with_extension("json.tmp");
+        fs::write(&temp_path, &json).await?;
+        fs::rename(&temp_path, &path).await?;
+        
         debug!("Saved session {} to {:?}", session.id, self.base_path);
         Ok(())
     }
@@ -138,7 +143,7 @@ impl MemoryStore {
 
     /// Retrieve a value
     pub async fn get(&self, key: &str, scope: &str) -> Result<Option<String>> {
-        let scope_dir = self.base_path.join(scope);
+        let scope_dir = self.ensure_dir(scope).await?;
         let path = self.key_path(&scope_dir, key);
         if !path.exists() {
             return Ok(None);
@@ -149,7 +154,7 @@ impl MemoryStore {
 
     /// Delete a value
     pub async fn delete(&self, key: &str, scope: &str) -> Result<()> {
-        let scope_dir = self.base_path.join(scope);
+        let scope_dir = self.ensure_dir(scope).await?;
         let path = self.key_path(&scope_dir, key);
         if path.exists() {
             fs::remove_file(path).await?;
@@ -159,10 +164,7 @@ impl MemoryStore {
 
     /// List all keys in a scope
     pub async fn list(&self, scope: &str) -> Result<Vec<String>> {
-        let scope_dir = self.base_path.join(scope);
-        if !scope_dir.exists() {
-            return Ok(vec![]);
-        }
+        let scope_dir = self.ensure_dir(scope).await?;
         
         let mut keys = Vec::new();
         let mut entries = fs::read_dir(scope_dir).await?;
