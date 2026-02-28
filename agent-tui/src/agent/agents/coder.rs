@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
+use crate::agent::TaskProcessor;
 
 /// Code block extracted from LLM response
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +49,12 @@ pub enum FileOperation {
 /// Coder agent for code generation and editing
 pub struct CoderAgent;
 
+impl TaskProcessor for CoderAgent {
+    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult> {
+        Self::process_task_internal(task, response)
+    }
+}
+
 impl CoderAgent {
     /// Create a new CoderAgent
     pub fn create() -> Agent {
@@ -78,7 +85,7 @@ impl CoderAgent {
     }
 
     /// Process a task (code generation or editing)
-    pub fn process_task(task: &Task, llm_response: &str) -> Result<TaskResult> {
+    fn process_task_internal(task: &Task, llm_response: &str) -> Result<TaskResult> {
         match task.task_type {
             TaskType::CodeGeneration => Self::handle_code_generation(llm_response),
             TaskType::CodeEdit => Self::handle_code_edit(llm_response),

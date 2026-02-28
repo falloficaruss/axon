@@ -7,14 +7,15 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::info;
+use tracing::{info, error, warn};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 
 use crate::{
     llm::LlmClient,
     shared::SharedMemory,
-    types::{Agent, AgentState, Message, Task, TaskResult, Id, ExecutionContext},
+    types::{Agent, AgentState, AgentRole, Message, Task, TaskResult, Id, ExecutionContext},
+    agent::TaskProcessor,
 };
 
 /// Commands that can be sent to an agent
@@ -171,6 +172,14 @@ impl AgentRuntime {
         }
     }
 
+    /// Get the appropriate processor for the agent's role
+    fn get_processor(role: AgentRole) -> Option<Box<dyn TaskProcessor>> {
+        match role {
+            AgentRole::Coder => Some(Box::new(crate::agent::agents::coder::CoderAgent)),
+            _ => None,
+        }
+    }
+
     /// Start the agent runtime as a background task
     pub async fn spawn(self) -> AgentHandle {
         let (command_tx, mut command_rx) = mpsc::channel::<(AgentCommand, Option<oneshot::Sender<AgentResponse>>)>(32);
@@ -250,6 +259,59 @@ impl AgentRuntime {
         }
     }
 
+    /// Apply file actions (generated or edited) to the disk
+    async fn apply_file_actions(&self, agent_id: &Id, response: &str, result: &mut TaskResult) {
+        let metadata_keys = [("generated_files", crate::agent::agents::coder::FileOperation::Create), 
+                            ("edited_files", crate::agent::agents::coder::FileOperation::Update)];
+        
+        for (key, operation) in metadata_keys {
+            if let Some(files_value) = result.metadata.get(key) {
+                if let Some(files) = files_value.as_array() {
+                    if files.is_empty() { continue; }
+
+                    info!("Agent {} {} {} files, applying changes...", agent_id, if key.starts_with("gen") { "generated" } else { "edited" }, files.len());
+                    
+                    match crate::agent::agents::coder::CoderAgent::extract_code_blocks(response) {
+                        Ok(blocks) => {
+                            let changes: Vec<_> = blocks.into_iter()
+                                .filter(|b| b.file_path.is_some())
+                                .map(|b| crate::agent::agents::coder::CodeChange {
+                                    file_path: std::path::PathBuf::from(b.file_path.unwrap()),
+                                    content: b.code,
+                                    operation: operation.clone(),
+                                })
+                                .collect();
+                            
+                            // Simple validation: check if metadata file list matches extracted blocks
+                            let extracted_paths: std::collections::HashSet<_> = changes.iter()
+                                .map(|c| c.file_path.to_string_lossy().to_string())
+                                .collect();
+                            
+                            for file_val in files {
+                                if let Some(path) = file_val.as_str() {
+                                    if !extracted_paths.contains(path) {
+                                        warn!("Agent {} metadata specifies file '{}' but it was not found in code blocks", agent_id, path);
+                                    }
+                                }
+                            }
+
+                            if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
+                                error!("Agent {} failed to apply changes: {}", agent_id, e);
+                                result.success = false;
+                                result.error = Some(format!("Failed to apply changes: {}", e));
+                            }
+                        }
+                        Err(e) => {
+                            error!("Agent {} failed to extract code blocks: {}", agent_id, e);
+                            result.success = false;
+                            result.error = Some(format!("Failed to parse code blocks: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Handle task processing
     async fn handle_process_task(
         &mut self,
@@ -257,11 +319,12 @@ impl AgentRuntime {
         task: Task,
         context: ExecutionContext,
     ) -> AgentResponse {
-        // Update state to running
-        {
+        // Update state to running and capture role
+        let agent_role = {
             let mut agent = self.agent.write().await;
             agent.state = AgentState::Running;
-        }
+            agent.role
+        };
         
         let _ = self.event_tx.send(AgentEvent::StateChanged {
             agent_id: agent_id.clone(),
@@ -273,14 +336,14 @@ impl AgentRuntime {
         }).await;
 
         // Build messages for LLM
-        let agent = self.agent.read().await;
-        let agent_role = agent.role;
-        let system_prompt = if agent.system_prompt.is_empty() {
-            format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
-        } else {
-            agent.system_prompt.clone()
+        let system_prompt = {
+            let agent = self.agent.read().await;
+            if agent.system_prompt.is_empty() {
+                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
+            } else {
+                agent.system_prompt.clone()
+            }
         };
-        drop(agent);
 
         let mut messages = vec![Message::system(&system_prompt)];
         messages.extend(context.messages);
@@ -300,73 +363,31 @@ impl AgentRuntime {
                     state: AgentState::Completed,
                 }).await;
 
-                // Process the response using specialized agent logic if available
-                let mut result = match agent_role {
-                    crate::types::AgentRole::Coder => {
-                        match crate::agent::agents::coder::CoderAgent::process_task(&task, &response) {
-                            Ok(res) => res,
-                            Err(_) => TaskResult {
-                                success: true,
+                // Process the response using specialized agent logic via TaskProcessor trait
+                let mut result = if let Some(processor) = Self::get_processor(agent_role) {
+                    match processor.process_task(&task, &response) {
+                        Ok(res) => res,
+                        Err(e) => {
+                            warn!("Agent {} specialized processing failed: {}", agent_id, e);
+                            TaskResult {
+                                success: true, // Still success as the LLM responded, but processing failed
                                 output: response.clone(),
-                                error: None,
+                                error: Some(format!("Specialized processing error: {}", e)),
                                 metadata: Default::default(),
-                            },
+                            }
                         }
                     }
-                    _ => TaskResult {
+                } else {
+                    TaskResult {
                         success: true,
                         output: response.clone(),
                         error: None,
                         metadata: Default::default(),
-                    },
+                    }
                 };
 
                 // Execute autonomous actions if present in metadata
-                if let Some(generated_files) = result.metadata.get("generated_files") {
-                    if let Some(files) = generated_files.as_array() {
-                        if !files.is_empty() {
-                            info!("Agent {} generated {} files, applying changes...", agent_id, files.len());
-                            if let Ok(blocks) = crate::agent::agents::coder::CoderAgent::extract_code_blocks(&response) {
-                                let changes: Vec<_> = blocks.into_iter()
-                                    .filter(|b| b.file_path.is_some())
-                                    .map(|b| crate::agent::agents::coder::CodeChange {
-                                        file_path: std::path::PathBuf::from(b.file_path.unwrap()),
-                                        content: b.code,
-                                        operation: crate::agent::agents::coder::FileOperation::Create,
-                                    })
-                                    .collect();
-                                
-                                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
-                                    result.success = false;
-                                    result.error = Some(format!("Failed to apply changes: {}", e));
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                if let Some(edited_files) = result.metadata.get("edited_files") {
-                    if let Some(files) = edited_files.as_array() {
-                        if !files.is_empty() {
-                            info!("Agent {} edited {} files, applying changes...", agent_id, files.len());
-                            if let Ok(blocks) = crate::agent::agents::coder::CoderAgent::extract_code_blocks(&response) {
-                                let changes: Vec<_> = blocks.into_iter()
-                                    .filter(|b| b.file_path.is_some())
-                                    .map(|b| crate::agent::agents::coder::CodeChange {
-                                        file_path: std::path::PathBuf::from(b.file_path.unwrap()),
-                                        content: b.code,
-                                        operation: crate::agent::agents::coder::FileOperation::Update,
-                                    })
-                                    .collect();
-                                
-                                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
-                                    result.success = false;
-                                    result.error = Some(format!("Failed to apply changes: {}", e));
-                                }
-                            }
-                        }
-                    }
-                }
+                self.apply_file_actions(agent_id, &response, &mut result).await;
 
                 let _ = self.event_tx.send(AgentEvent::Completed {
                     agent_id: agent_id.clone(),
@@ -377,6 +398,7 @@ impl AgentRuntime {
             }
             Err(e) => {
                 let error_msg = e.to_string();
+                error!("Agent {} LLM call failed: {}", agent_id, error_msg);
                 
                 // Update state to failed
                 {
@@ -413,13 +435,14 @@ impl AgentRuntime {
         }
 
         // Build messages for LLM
-        let agent = self.agent.read().await;
-        let system_prompt = if agent.system_prompt.is_empty() {
-            format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
-        } else {
-            agent.system_prompt.clone()
+        let system_prompt = {
+            let agent = self.agent.read().await;
+            if agent.system_prompt.is_empty() {
+                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
+            } else {
+                agent.system_prompt.clone()
+            }
         };
-        drop(agent);
 
         let mut messages = vec![Message::system(&system_prompt)];
         messages.extend(history);
@@ -448,6 +471,7 @@ impl AgentRuntime {
                 AgentResponse::ChatResponse(full_response)
             }
             Err(e) => {
+                error!("Agent {} streaming LLM call failed: {}", agent_id, e);
                 // Update state to failed
                 {
                     let mut agent = self.agent.write().await;
@@ -462,7 +486,7 @@ impl AgentRuntime {
     /// Handle chat message
     async fn handle_chat(
         &mut self,
-        _agent_id: &Id,
+        agent_id: &Id,
         message: String,
         history: Vec<Message>,
     ) -> AgentResponse {
@@ -473,13 +497,14 @@ impl AgentRuntime {
         }
 
         // Build messages for LLM
-        let agent = self.agent.read().await;
-        let system_prompt = if agent.system_prompt.is_empty() {
-            format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
-        } else {
-            agent.system_prompt.clone()
+        let system_prompt = {
+            let agent = self.agent.read().await;
+            if agent.system_prompt.is_empty() {
+                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
+            } else {
+                agent.system_prompt.clone()
+            }
         };
-        drop(agent);
 
         let mut messages = vec![Message::system(&system_prompt)];
         messages.extend(history);
@@ -497,6 +522,7 @@ impl AgentRuntime {
                 AgentResponse::ChatResponse(response)
             }
             Err(e) => {
+                error!("Agent {} chat LLM call failed: {}", agent_id, e);
                 // Update state to failed
                 {
                     let mut agent = self.agent.write().await;

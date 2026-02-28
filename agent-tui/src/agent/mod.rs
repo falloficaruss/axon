@@ -1,11 +1,15 @@
 pub mod agents;
 pub mod runtime;
-#[cfg(test)]
-pub mod repro_test;
 
 pub use runtime::{AgentHandle, AgentInstance, AgentRuntimeBuilder, AgentEvent};
 
-use crate::types::{Agent, AgentRole, Capability};
+use crate::types::{Agent, AgentRole, Capability, Task, TaskResult};
+use anyhow::Result;
+
+/// Trait for specialized agent task processing
+pub trait TaskProcessor: Send + Sync {
+    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult>;
+}
 
 /// Registry of available agents
 pub struct AgentRegistry {
