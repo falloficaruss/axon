@@ -1,5 +1,7 @@
 pub mod agents;
 pub mod runtime;
+#[cfg(test)]
+pub mod repro_test;
 
 pub use runtime::{AgentHandle, AgentInstance, AgentRuntimeBuilder, AgentEvent};
 

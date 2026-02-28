@@ -274,6 +274,7 @@ impl AgentRuntime {
 
         // Build messages for LLM
         let agent = self.agent.read().await;
+        let agent_role = agent.role;
         let system_prompt = if agent.system_prompt.is_empty() {
             format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
         } else {
@@ -299,12 +300,73 @@ impl AgentRuntime {
                     state: AgentState::Completed,
                 }).await;
 
-                let result = TaskResult {
-                    success: true,
-                    output: response.clone(),
-                    error: None,
-                    metadata: Default::default(),
+                // Process the response using specialized agent logic if available
+                let mut result = match agent_role {
+                    crate::types::AgentRole::Coder => {
+                        match crate::agent::agents::coder::CoderAgent::process_task(&task, &response) {
+                            Ok(res) => res,
+                            Err(_) => TaskResult {
+                                success: true,
+                                output: response.clone(),
+                                error: None,
+                                metadata: Default::default(),
+                            },
+                        }
+                    }
+                    _ => TaskResult {
+                        success: true,
+                        output: response.clone(),
+                        error: None,
+                        metadata: Default::default(),
+                    },
                 };
+
+                // Execute autonomous actions if present in metadata
+                if let Some(generated_files) = result.metadata.get("generated_files") {
+                    if let Some(files) = generated_files.as_array() {
+                        if !files.is_empty() {
+                            info!("Agent {} generated {} files, applying changes...", agent_id, files.len());
+                            if let Ok(blocks) = crate::agent::agents::coder::CoderAgent::extract_code_blocks(&response) {
+                                let changes: Vec<_> = blocks.into_iter()
+                                    .filter(|b| b.file_path.is_some())
+                                    .map(|b| crate::agent::agents::coder::CodeChange {
+                                        file_path: std::path::PathBuf::from(b.file_path.unwrap()),
+                                        content: b.code,
+                                        operation: crate::agent::agents::coder::FileOperation::Create,
+                                    })
+                                    .collect();
+                                
+                                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
+                                    result.success = false;
+                                    result.error = Some(format!("Failed to apply changes: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if let Some(edited_files) = result.metadata.get("edited_files") {
+                    if let Some(files) = edited_files.as_array() {
+                        if !files.is_empty() {
+                            info!("Agent {} edited {} files, applying changes...", agent_id, files.len());
+                            if let Ok(blocks) = crate::agent::agents::coder::CoderAgent::extract_code_blocks(&response) {
+                                let changes: Vec<_> = blocks.into_iter()
+                                    .filter(|b| b.file_path.is_some())
+                                    .map(|b| crate::agent::agents::coder::CodeChange {
+                                        file_path: std::path::PathBuf::from(b.file_path.unwrap()),
+                                        content: b.code,
+                                        operation: crate::agent::agents::coder::FileOperation::Update,
+                                    })
+                                    .collect();
+                                
+                                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
+                                    result.success = false;
+                                    result.error = Some(format!("Failed to apply changes: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
 
                 let _ = self.event_tx.send(AgentEvent::Completed {
                     agent_id: agent_id.clone(),
