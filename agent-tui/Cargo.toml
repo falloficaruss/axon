@@ -72,3 +72,7 @@ strip = true
 [profile.dev]
 opt-level = 0
 debug = true
+
+[features]
+default = []
+mock-llm = []
