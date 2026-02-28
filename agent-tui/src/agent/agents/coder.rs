@@ -582,11 +582,12 @@ Second file:\n\
         let task = Task::new("Generate a Rust function", TaskType::CodeGeneration);
         let llm_response = "Here's the code:\n```rust\nfn hello() {\n    println!(\"Hello\");\n}\n```";
 
-        let result = CoderAgent::process_task(&task, llm_response).unwrap();
+        let agent = CoderAgent;
+        let result = agent.process_task(&task, llm_response).unwrap();
         assert!(result.success);
         assert!(result.output.contains("fn hello()"));
         assert_eq!(result.error, None);
-        
+
         let code_blocks_count = result.metadata.get("code_blocks").unwrap();
         assert_eq!(code_blocks_count, &serde_json::json!(1));
     }
@@ -596,9 +597,10 @@ Second file:\n\
         let task = Task::new("Generate a main function", TaskType::CodeGeneration);
         let llm_response = "```rust:src/main.rs\nfn main() {\n    println!(\"Hello, world!\");\n}\n```";
 
-        let result = CoderAgent::process_task(&task, llm_response).unwrap();
+        let agent = CoderAgent;
+        let result = agent.process_task(&task, llm_response).unwrap();
         assert!(result.success);
-        
+
         let generated_files = result.metadata.get("generated_files").unwrap();
         assert_eq!(generated_files, &serde_json::json!(vec!["src/main.rs"]));
     }
@@ -608,9 +610,10 @@ Second file:\n\
         let task = Task::new("Edit function", TaskType::CodeEdit);
         let llm_response = "Updated:\n```python:app.py\ndef greet(name):\n    print(f\"Hello, {name}!\")\n```";
 
-        let result = CoderAgent::process_task(&task, llm_response).unwrap();
+        let agent = CoderAgent;
+        let result = agent.process_task(&task, llm_response).unwrap();
         assert!(result.success);
-        
+
         let edited_files = result.metadata.get("edited_files").unwrap();
         assert_eq!(edited_files, &serde_json::json!(vec!["app.py"]));
     }
@@ -620,7 +623,8 @@ Second file:\n\
         let task = Task::new("Explain code", TaskType::CodeGeneration);
         let llm_response = "This is just an explanation without any code blocks.";
 
-        let result = CoderAgent::process_task(&task, llm_response).unwrap();
+        let agent = CoderAgent;
+        let result = agent.process_task(&task, llm_response).unwrap();
         assert!(result.success);
         assert_eq!(result.output, llm_response);
         assert!(result.metadata.is_empty());
@@ -631,7 +635,8 @@ Second file:\n\
         let task = Task::new("Review code", TaskType::CodeReview);
         let llm_response = "Some response";
 
-        let result = CoderAgent::process_task(&task, llm_response);
+        let agent = CoderAgent;
+        let result = agent.process_task(&task, llm_response);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unsupported task type"));
     }
@@ -644,12 +649,13 @@ Second file:\n\
 Second file:\n\
 ```rust:src/main.rs\nfn main() {}\n```";
 
-        let result = CoderAgent::process_task(&task, llm_response).unwrap();
+        let agent = CoderAgent;
+        let result = agent.process_task(&task, llm_response).unwrap();
         assert!(result.success);
-        
+
         let code_blocks_count = result.metadata.get("code_blocks").unwrap();
         assert_eq!(code_blocks_count, &serde_json::json!(2));
-        
+
         let generated_files = result.metadata.get("generated_files").unwrap();
         assert_eq!(generated_files, &serde_json::json!(vec!["src/lib.rs", "src/main.rs"]));
     }
