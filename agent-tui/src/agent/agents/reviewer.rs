@@ -8,9 +8,11 @@ use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
+use crate::shared::SharedMemory;
 
 /// Severity level for a code review issue
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +70,7 @@ pub struct ReviewResult {
 pub struct ReviewerAgent;
 
 impl TaskProcessor for ReviewerAgent {
-    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult> {
+    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -298,6 +300,8 @@ impl ReviewerAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::SharedMemory;
+    use std::sync::Arc;
 
     #[test]
     fn test_parse_review_with_issues() {
@@ -367,7 +371,8 @@ Code looks good.
 ## Quality Score: 8/10"#;
 
         let agent = ReviewerAgent;
-        let result = agent.process_task(&task, response).unwrap();
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
         assert_eq!(result.metadata.get("quality_score").unwrap(), &serde_json::json!(8));
@@ -379,7 +384,8 @@ Code looks good.
         let response = "Some response";
 
         let agent = ReviewerAgent;
-        let result = agent.process_task(&task, response);
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unsupported task type"));
     }

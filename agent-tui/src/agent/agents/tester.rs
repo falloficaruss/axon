@@ -11,9 +11,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
+use crate::shared::SharedMemory;
 
 /// Type of test
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +95,7 @@ pub struct TestFile {
 pub struct TesterAgent;
 
 impl TaskProcessor for TesterAgent {
-    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult> {
+    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -443,6 +445,8 @@ impl TesterAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::SharedMemory;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
@@ -542,7 +546,8 @@ fn test_function() {
 ```"#;
 
         let agent = TesterAgent;
-        let result = agent.process_task(&task, response).unwrap();
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
         assert_eq!(result.metadata.get("test_count").unwrap(), &serde_json::json!(1));
@@ -554,7 +559,8 @@ fn test_function() {
         let response = "test result: ok. 10 passed; 0 failed; 0 ignored";
 
         let agent = TesterAgent;
-        let result = agent.process_task(&task, response).unwrap();
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
         assert_eq!(result.metadata.get("passed").unwrap(), &serde_json::json!(10));
@@ -566,7 +572,8 @@ fn test_function() {
         let response = "test result: FAILED. 8 passed; 2 failed; 0 ignored";
 
         let agent = TesterAgent;
-        let result = agent.process_task(&task, response).unwrap();
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(!result.success);
         assert_eq!(result.metadata.get("failed").unwrap(), &serde_json::json!(2));
@@ -579,7 +586,8 @@ fn test_function() {
         let response = "Some response";
 
         let agent = TesterAgent;
-        let result = agent.process_task(&task, response);
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory);
         assert!(result.is_err());
     }
 

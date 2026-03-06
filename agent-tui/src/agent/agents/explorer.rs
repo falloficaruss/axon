@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
+use crate::shared::SharedMemory;
 
 /// Information about a file in the codebase
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +82,7 @@ pub struct CodebaseSummary {
 pub struct ExplorerAgent;
 
 impl TaskProcessor for ExplorerAgent {
-    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult> {
+    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -630,6 +632,8 @@ impl ExplorerAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::SharedMemory;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
@@ -769,8 +773,9 @@ Found 50 files with 2500 lines of code.
 "#;
 
         let agent = ExplorerAgent;
-        let result = agent.process_task(&task, response).unwrap();
-        
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
+
         assert!(result.success);
         assert_eq!(result.metadata.get("total_files").unwrap(), &serde_json::json!(50));
         assert_eq!(result.metadata.get("total_lines").unwrap(), &serde_json::json!(2500));
@@ -782,7 +787,8 @@ Found 50 files with 2500 lines of code.
         let response = "Some response";
 
         let agent = ExplorerAgent;
-        let result = agent.process_task(&task, response);
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory);
         assert!(result.is_err());
     }
 }

@@ -7,9 +7,11 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType, Subtask, Plan};
 use crate::agent::TaskProcessor;
+use crate::shared::SharedMemory;
 
 /// A dependency relationship between subtasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +67,7 @@ pub struct SubtaskInfo {
 pub struct PlannerAgent;
 
 impl TaskProcessor for PlannerAgent {
-    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult> {
+    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -403,6 +405,8 @@ impl PlannerAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::SharedMemory;
+    use std::sync::Arc;
 
     #[test]
     fn test_extract_section() {
@@ -491,7 +495,8 @@ Hybrid - some tasks can run in parallel after exploration
 5/10"#;
 
         let agent = PlannerAgent;
-        let result = agent.process_task(&task, response).unwrap();
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
         assert_eq!(result.metadata.get("subtask_count").unwrap(), &serde_json::json!(2));
@@ -504,7 +509,8 @@ Hybrid - some tasks can run in parallel after exploration
         let response = "Some response";
 
         let agent = PlannerAgent;
-        let result = agent.process_task(&task, response);
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory);
         assert!(result.is_err());
     }
 

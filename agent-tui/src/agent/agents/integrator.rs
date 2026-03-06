@@ -7,9 +7,11 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
+use crate::shared::SharedMemory;
 
 /// A single result from an agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +49,7 @@ pub struct SynthesisResult {
 pub struct IntegratorAgent;
 
 impl TaskProcessor for IntegratorAgent {
-    fn process_task(&self, task: &Task, response: &str) -> Result<TaskResult> {
+    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
