@@ -5,7 +5,7 @@ pub mod markdown;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -93,6 +93,8 @@ pub struct App {
     selected_memory_key: usize,
     /// Handle to the currently running task (for cancellation)
     current_task_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Cached agent list for UI rendering
+    cached_agents: Vec<Agent>,
 }
 
 /// Application modes
@@ -206,6 +208,7 @@ impl App {
             memory_keys: Vec::new(),
             selected_memory_key: 0,
             current_task_handle: None,
+            cached_agents: Vec::new(),
         })
     }
 
@@ -249,9 +252,8 @@ impl App {
             // Handle events
             if crossterm::event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key_event(key).await?;
-                    }
+                    // Handle all key events, not just Press
+                    self.handle_key_event(key).await?;
                 }
             }
 
@@ -401,36 +403,28 @@ impl App {
                     self.sidebar.previous_session(); // Reusing navigation logic for now
                 }
                 KeyCode::Down | KeyCode::Char('n') => {
-                    let registry = self.agent_registry.blocking_read();
-                    self.sidebar.next_session(registry.list().len());
+                    self.sidebar.next_session(self.cached_agents.len());
                 }
                 KeyCode::Enter | KeyCode::Char('l') => {
                     let idx = self.sidebar.selected_session();
-                    let registry = self.agent_registry.blocking_read();
-                    let agents = registry.list();
-                    if idx < agents.len() {
-                        let agent = &agents[idx];
+                    if idx < self.cached_agents.len() {
+                        let agent = &self.cached_agents[idx];
                         self.active_agent = Some(agent.clone());
                         let msg = Message::system(&format!("Selected agent: {} ({})", agent.name, agent.role.as_str()));
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     }
-                    drop(registry);
                     self.mode = AppMode::Normal;
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     let idx = (c.to_digit(10).unwrap() as usize).saturating_sub(1);
-                    let registry = self.agent_registry.blocking_read();
-                    let agents = registry.list();
-
-                    if idx < agents.len() {
-                        let agent = &agents[idx];
+                    if idx < self.cached_agents.len() {
+                        let agent = &self.cached_agents[idx];
                         self.active_agent = Some(agent.clone());
                         let msg = Message::system(&format!("Selected agent: {} ({})", agent.name, agent.role.as_str()));
                         self.session.add_message(msg.clone());
                         self.chat.add_message(msg);
                     }
-                    drop(registry);
                     self.mode = AppMode::Normal;
                 }
                 _ => {}
@@ -614,6 +608,12 @@ impl App {
         if let Ok(sessions) = self.session_store.list().await {
             self.sessions = sessions;
             self.sidebar.set_last_refresh(chrono::Local::now());
+        }
+
+        // Update cached agent list
+        {
+            let registry = self.agent_registry.read().await;
+            self.cached_agents = registry.list().iter().map(|a| a.clone()).collect();
         }
 
         // Fetch memory keys if in MemoryManager mode or periodically
@@ -1101,9 +1101,7 @@ impl App {
 
         // Sidebar
         if self.show_sidebar {
-            let registry = self.agent_registry.blocking_read();
-            let agents: Vec<_> = registry.list().to_vec();
-            drop(registry);
+            let agents: Vec<_> = self.cached_agents.clone();
             self.sidebar.focused = self.mode == AppMode::Sidebar;
             self.sidebar.draw(frame, main_layout[0], &self.session, &agents, self.active_agent.as_ref(), &self.sessions);
         }
@@ -1150,8 +1148,7 @@ impl App {
             Line::from(""),
         ];
 
-        let registry = self.agent_registry.blocking_read();
-        for (idx, agent) in registry.list().iter().enumerate() {
+        for (idx, agent) in self.cached_agents.iter().enumerate() {
             let line = Line::from(format!(
                 "{}. {} - {}",
                 idx + 1,
@@ -1160,7 +1157,6 @@ impl App {
             ));
             text.push(line);
         }
-        drop(registry);
 
         text.push(Line::from(""));
         text.push(Line::from("Press number to select, ESC to cancel"));
