@@ -3,7 +3,7 @@
 //! This module provides the runtime environment for agents to execute tasks.
 //! Agents run as async tasks and communicate via message passing.
 
-#![allow(dead_code)]
+
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -39,6 +39,7 @@ pub enum AgentCommand {
         context: ExecutionContext,
     },
     /// Get the current state of the agent
+    #[allow(dead_code)]
     GetState,
     /// Shutdown the agent
     Shutdown,
@@ -74,6 +75,7 @@ pub enum AgentEvent {
 /// Handle to a running agent
 #[derive(Debug, Clone)]
 pub struct AgentHandle {
+    #[allow(dead_code)]
     pub agent_id: Id,
     pub agent_name: String,
     command_tx: mpsc::Sender<(AgentCommand, Option<oneshot::Sender<AgentResponse>>)>,
@@ -122,6 +124,7 @@ impl AgentHandle {
     }
 
     /// Get agent state
+    #[allow(dead_code)]
     pub async fn get_state(&self) -> Result<AgentState> {
         match self.send_command(AgentCommand::GetState).await? {
             AgentResponse::State(state) => Ok(state),
@@ -143,6 +146,7 @@ pub enum AgentResponse {
     /// Chat response
     ChatResponse(String),
     /// Current state
+    #[allow(dead_code)]
     State(AgentState),
     /// Error occurred
     Error(String),
@@ -318,30 +322,10 @@ impl AgentRuntime {
         }
     }
 
-    /// Handle task processing
-    async fn handle_process_task(
-        &mut self,
-        agent_id: &Id,
-        task: Task,
-        context: ExecutionContext,
-    ) -> AgentResponse {
-        // Update state to running and capture role
-        let agent_role = {
-            let mut agent = self.agent.write().await;
-            agent.state = AgentState::Running;
-            agent.role
-        };
-        
-        let _ = self.event_tx.send(AgentEvent::StateChanged {
-            agent_id: agent_id.clone(),
-            state: AgentState::Running,
-        }).await;
-
-        let _ = self.event_tx.send(AgentEvent::Started {
-            agent_id: agent_id.clone(),
-        }).await;
-
-        // Build messages for LLM
+    /// Build the system prompt with shared memory context injected.
+    /// This deduplicates the prompt construction that was previously copy-pasted
+    /// across handle_process_task, handle_stream_chat, and handle_chat.
+    async fn build_system_prompt(&self, agent_id: &Id, session_id: &str) -> String {
         let mut system_prompt = {
             let agent = self.agent.read().await;
             if agent.system_prompt.is_empty() {
@@ -351,25 +335,21 @@ impl AgentRuntime {
             }
         };
 
-        // Inject shared memory context into system prompt
+        // Inject shared memory context
         let mut shared_context = String::from("\n\nShared Memory Context:\n");
         let mut has_context = false;
 
-        // 1. Global context
-        if let Some(val) = self.shared_memory.get_global("project_info") {
+        if let Some(val) = self.shared_memory.get_global("project_info").await {
             shared_context.push_str(&format!("Global Project Info: {}\n", val));
             has_context = true;
         }
 
-        // 2. Session context
-        let session_id = context.session_id.clone();
-        if let Some(val) = self.shared_memory.get_session(&session_id, "relevant_context") {
+        if let Some(val) = self.shared_memory.get_session(session_id, "relevant_context").await {
             shared_context.push_str(&format!("Session Context: {}\n", val));
             has_context = true;
         }
 
-        // 3. Agent context
-        if let Some(val) = self.shared_memory.get_agent(agent_id, "state") {
+        if let Some(val) = self.shared_memory.get_agent(agent_id, "state").await {
             shared_context.push_str(&format!("Agent State: {}\n", val));
             has_context = true;
         }
@@ -378,6 +358,45 @@ impl AgentRuntime {
             system_prompt.push_str(&shared_context);
         }
 
+        system_prompt
+    }
+
+    /// Update the agent's state and emit a StateChanged event.
+    async fn set_agent_state(&self, agent_id: &Id, state: AgentState) {
+        {
+            let mut agent = self.agent.write().await;
+            agent.state = state;
+        }
+        if let Err(e) = self.event_tx.send(AgentEvent::StateChanged {
+            agent_id: agent_id.clone(),
+            state,
+        }).await {
+            warn!("Failed to send state change event for agent {}: {}", agent_id, e);
+        }
+    }
+
+    /// Handle task processing
+    async fn handle_process_task(
+        &mut self,
+        agent_id: &Id,
+        task: Task,
+        context: ExecutionContext,
+    ) -> AgentResponse {
+        // Update state to running and capture role
+        let agent_role = {
+            let agent = self.agent.read().await;
+            agent.role
+        };
+        self.set_agent_state(agent_id, AgentState::Running).await;
+
+        if let Err(e) = self.event_tx.send(AgentEvent::Started {
+            agent_id: agent_id.clone(),
+        }).await {
+            warn!("Failed to send started event for agent {}: {}", agent_id, e);
+        }
+
+        // Build messages for LLM
+        let system_prompt = self.build_system_prompt(agent_id, &context.session_id).await;
         let mut messages = vec![Message::system(&system_prompt)];
         messages.extend(context.messages);
         messages.push(Message::user(&format!("Task: {}", task.description)));
@@ -385,16 +404,7 @@ impl AgentRuntime {
         // Send to LLM
         match self.llm_client.send_message(&messages).await {
             Ok(response) => {
-                // Update state to completed
-                {
-                    let mut agent = self.agent.write().await;
-                    agent.state = AgentState::Completed;
-                }
-
-                let _ = self.event_tx.send(AgentEvent::StateChanged {
-                    agent_id: agent_id.clone(),
-                    state: AgentState::Completed,
-                }).await;
+                self.set_agent_state(agent_id, AgentState::Completed).await;
 
                 // Process the response using specialized agent logic via TaskProcessor trait
                 let mut result = if let Some(processor) = Self::get_processor(agent_role) {
@@ -403,7 +413,7 @@ impl AgentRuntime {
                         Err(e) => {
                             warn!("Agent {} specialized processing failed: {}", agent_id, e);
                             TaskResult {
-                                success: true, // Still success as the LLM responded, but processing failed
+                                success: true,
                                 output: response.clone(),
                                 error: Some(format!("Specialized processing error: {}", e)),
                                 metadata: Default::default(),
@@ -422,32 +432,26 @@ impl AgentRuntime {
                 // Execute autonomous actions if present in metadata
                 self.apply_file_actions(agent_id, &response, &mut result).await;
 
-                let _ = self.event_tx.send(AgentEvent::Completed {
+                if let Err(e) = self.event_tx.send(AgentEvent::Completed {
                     agent_id: agent_id.clone(),
                     result: result.clone(),
-                }).await;
+                }).await {
+                    warn!("Failed to send completed event for agent {}: {}", agent_id, e);
+                }
 
                 AgentResponse::TaskCompleted(result)
             }
             Err(e) => {
                 let error_msg = e.to_string();
                 error!("Agent {} LLM call failed: {}", agent_id, error_msg);
-                
-                // Update state to failed
-                {
-                    let mut agent = self.agent.write().await;
-                    agent.state = AgentState::Failed;
-                }
+                self.set_agent_state(agent_id, AgentState::Failed).await;
 
-                let _ = self.event_tx.send(AgentEvent::StateChanged {
-                    agent_id: agent_id.clone(),
-                    state: AgentState::Failed,
-                }).await;
-
-                let _ = self.event_tx.send(AgentEvent::Error {
+                if let Err(e) = self.event_tx.send(AgentEvent::Error {
                     agent_id: agent_id.clone(),
                     error: error_msg.clone(),
-                }).await;
+                }).await {
+                    warn!("Failed to send error event for agent {}: {}", agent_id, e);
+                }
 
                 AgentResponse::Error(error_msg)
             }
@@ -462,46 +466,9 @@ impl AgentRuntime {
         history: Vec<Message>,
         context: ExecutionContext,
     ) -> AgentResponse {
-        // Update state to running
-        {
-            let mut agent = self.agent.write().await;
-            agent.state = AgentState::Running;
-        }
+        self.set_agent_state(agent_id, AgentState::Running).await;
 
-        // Build messages for LLM
-        let mut system_prompt = {
-            let agent = self.agent.read().await;
-            if agent.system_prompt.is_empty() {
-                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
-            } else {
-                agent.system_prompt.clone()
-            }
-        };
-
-        // Inject shared memory context into system prompt
-        let mut shared_context = String::from("\n\nShared Memory Context:\n");
-        let mut has_context = false;
-
-        if let Some(val) = self.shared_memory.get_global("project_info") {
-            shared_context.push_str(&format!("Global Project Info: {}\n", val));
-            has_context = true;
-        }
-
-        let session_id = context.session_id.clone();
-        if let Some(val) = self.shared_memory.get_session(&session_id, "relevant_context") {
-            shared_context.push_str(&format!("Session Context: {}\n", val));
-            has_context = true;
-        }
-
-        if let Some(val) = self.shared_memory.get_agent(agent_id, "state") {
-            shared_context.push_str(&format!("Agent State: {}\n", val));
-            has_context = true;
-        }
-
-        if has_context {
-            system_prompt.push_str(&shared_context);
-        }
-
+        let system_prompt = self.build_system_prompt(agent_id, &context.session_id).await;
         let mut messages = vec![Message::system(&system_prompt)];
         messages.extend(history);
         messages.push(Message::user(&message));
@@ -520,22 +487,12 @@ impl AgentRuntime {
                     }
                 }
                 
-                // Update state back to idle
-                {
-                    let mut agent = self.agent.write().await;
-                    agent.state = AgentState::Idle;
-                }
-
+                self.set_agent_state(agent_id, AgentState::Idle).await;
                 AgentResponse::ChatResponse(full_response)
             }
             Err(e) => {
                 error!("Agent {} streaming LLM call failed: {}", agent_id, e);
-                // Update state to failed
-                {
-                    let mut agent = self.agent.write().await;
-                    agent.state = AgentState::Failed;
-                }
-
+                self.set_agent_state(agent_id, AgentState::Failed).await;
                 AgentResponse::Error(e.to_string())
             }
         }
@@ -549,69 +506,21 @@ impl AgentRuntime {
         history: Vec<Message>,
         context: ExecutionContext,
     ) -> AgentResponse {
-        // Update state to running
-        {
-            let mut agent = self.agent.write().await;
-            agent.state = AgentState::Running;
-        }
+        self.set_agent_state(agent_id, AgentState::Running).await;
 
-        // Build messages for LLM
-        let mut system_prompt = {
-            let agent = self.agent.read().await;
-            if agent.system_prompt.is_empty() {
-                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
-            } else {
-                agent.system_prompt.clone()
-            }
-        };
-
-        // Inject shared memory context into system prompt
-        let mut shared_context = String::from("\n\nShared Memory Context:\n");
-        let mut has_context = false;
-
-        if let Some(val) = self.shared_memory.get_global("project_info") {
-            shared_context.push_str(&format!("Global Project Info: {}\n", val));
-            has_context = true;
-        }
-
-        let session_id = context.session_id.clone();
-        if let Some(val) = self.shared_memory.get_session(&session_id, "relevant_context") {
-            shared_context.push_str(&format!("Session Context: {}\n", val));
-            has_context = true;
-        }
-
-        if let Some(val) = self.shared_memory.get_agent(agent_id, "state") {
-            shared_context.push_str(&format!("Agent State: {}\n", val));
-            has_context = true;
-        }
-
-        if has_context {
-            system_prompt.push_str(&shared_context);
-        }
-
+        let system_prompt = self.build_system_prompt(agent_id, &context.session_id).await;
         let mut messages = vec![Message::system(&system_prompt)];
         messages.extend(history);
         messages.push(Message::user(&message));
 
-        // Send to LLM
         match self.llm_client.send_message(&messages).await {
             Ok(response) => {
-                // Update state back to idle
-                {
-                    let mut agent = self.agent.write().await;
-                    agent.state = AgentState::Idle;
-                }
-
+                self.set_agent_state(agent_id, AgentState::Idle).await;
                 AgentResponse::ChatResponse(response)
             }
             Err(e) => {
                 error!("Agent {} chat LLM call failed: {}", agent_id, e);
-                // Update state to failed
-                {
-                    let mut agent = self.agent.write().await;
-                    agent.state = AgentState::Failed;
-                }
-
+                self.set_agent_state(agent_id, AgentState::Failed).await;
                 AgentResponse::Error(e.to_string())
             }
         }
@@ -627,6 +536,7 @@ pub struct AgentInstance {
 
 impl AgentInstance {
     /// Get the agent ID
+    #[allow(dead_code)]
     pub fn id(&self) -> Id {
         self.handle.agent_id.clone()
     }

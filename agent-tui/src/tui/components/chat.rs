@@ -190,7 +190,7 @@ impl Default for Chat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{MessageRole, Id};
+    use crate::types::Id;
 
     #[test]
     fn test_chat_new() {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod components;
 pub mod markdown;
 
@@ -53,13 +51,15 @@ pub struct App {
     input: Input,
     /// Sidebar component
     sidebar: Sidebar,
-    /// LLM client
+    /// LLM client (used by orchestrator; retained for direct-access use cases)
+    #[allow(dead_code)]
     llm_client: Option<Arc<LlmClient>>,
     /// Orchestrator for task execution
     orchestrator: Option<Arc<Orchestrator>>,
     /// Agent registry
     agent_registry: Arc<RwLock<AgentRegistry>>,
-    /// Shared memory for agents
+    /// Shared memory for agents (used by orchestrator; retained for direct-access use cases)
+    #[allow(dead_code)]
     shared_memory: Arc<SharedMemory>,
     /// Session store for persistence
     session_store: Arc<SessionStore>,
@@ -69,7 +69,8 @@ pub struct App {
     active_agent: Option<Agent>,
     /// Agent event receiver
     agent_event_rx: mpsc::Receiver<AgentEvent>,
-    /// Agent event sender
+    /// Agent event sender (cloned into orchestrator; retained for future direct use)
+    #[allow(dead_code)]
     agent_event_tx: mpsc::Sender<AgentEvent>,
     /// Whether the app should quit
     should_quit: bool,
@@ -81,12 +82,12 @@ pub struct App {
     event_rx: mpsc::Receiver<AppEvent>,
     /// Event sender
     event_tx: mpsc::Sender<AppEvent>,
-    /// Last tick time
-    last_tick: Instant,
     /// Tick rate
     tick_rate: Duration,
     /// Last auto-save time
     last_save: Instant,
+    /// Last session list refresh time
+    last_session_refresh: Instant,
     /// Memory keys for memory manager
     memory_keys: Vec<String>,
     /// Selected memory key index
@@ -95,6 +96,8 @@ pub struct App {
     current_task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Cached agent list for UI rendering
     cached_agents: Vec<Agent>,
+    /// Selected agent index for agent selector (separate from sidebar)
+    agent_selected_index: usize,
 }
 
 /// Application modes
@@ -108,7 +111,8 @@ pub enum AppMode {
     AgentSelect,
     /// Memory manager mode
     MemoryManager,
-    /// Confirmation dialog
+    /// Confirmation dialog (not yet implemented)
+    #[allow(dead_code)]
     Confirm,
     /// Sidebar focus mode
     Sidebar,
@@ -202,13 +206,14 @@ impl App {
             mode: AppMode::Normal,
             event_rx,
             event_tx,
-            last_tick: Instant::now(),
             tick_rate: Duration::from_millis(250),
             last_save: Instant::now(),
+            last_session_refresh: Instant::now(),
             memory_keys: Vec::new(),
             selected_memory_key: 0,
             current_task_handle: None,
             cached_agents: Vec::new(),
+            agent_selected_index: 0,
         })
     }
 
@@ -221,10 +226,17 @@ impl App {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Main loop
+        // Main loop — use a closure to ensure terminal restoration even on panic
         let result = self.run_loop(&mut terminal).await;
 
-        // Restore terminal
+        // Restore terminal (always runs, even if run_loop errored)
+        Self::restore_terminal(&mut terminal)?;
+
+        result
+    }
+
+    /// Restore terminal to normal state. Called on both normal exit and cleanup.
+    fn restore_terminal<B: Backend + io::Write>(terminal: &mut Terminal<B>) -> Result<()> {
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
@@ -232,8 +244,7 @@ impl App {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
-
-        result
+        Ok(())
     }
 
     /// Main application loop
@@ -311,24 +322,7 @@ impl App {
                             let idx = self.sidebar.selected_session();
                             if idx < self.sessions.len() {
                                 let session_id = self.sessions[idx].id.clone();
-                                match self.session_store.load(&session_id).await {
-                                    Ok(session) => {
-                                        self.session = session;
-                                        self.chat.clear();
-                                        for msg in &self.session.messages {
-                                            self.chat.add_message(msg.clone());
-                                        }
-                                        let msg = Message::system(&format!("Session '{}' loaded from sidebar.", self.session.title));
-                                        self.session.add_message(msg.clone());
-                                        self.chat.add_message(msg);
-                                        info!("Loaded session {} from sidebar", session_id);
-                                    }
-                                    Err(e) => {
-                                        let error_msg = format!("Failed to load session: {}", e);
-                                        self.chat.add_message(Message::system(&error_msg));
-                                        error!("{}", error_msg);
-                                    }
-                                }
+                                self.load_session(&session_id).await;
                             }
                         }
                         _ => {}
@@ -400,31 +394,23 @@ impl App {
                     self.mode = AppMode::Normal;
                 }
                 KeyCode::Up | KeyCode::Char('p') => {
-                    self.sidebar.previous_session(); // Reusing navigation logic for now
+                    if self.agent_selected_index > 0 {
+                        self.agent_selected_index -= 1;
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('n') => {
-                    self.sidebar.next_session(self.cached_agents.len());
+                    if self.agent_selected_index < self.cached_agents.len().saturating_sub(1) {
+                        self.agent_selected_index += 1;
+                    }
                 }
                 KeyCode::Enter | KeyCode::Char('l') => {
-                    let idx = self.sidebar.selected_session();
-                    if idx < self.cached_agents.len() {
-                        let agent = &self.cached_agents[idx];
-                        self.active_agent = Some(agent.clone());
-                        let msg = Message::system(&format!("Selected agent: {} ({})", agent.name, agent.role.as_str()));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
+                    self.select_agent_by_index(self.agent_selected_index);
                     self.mode = AppMode::Normal;
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
-                    let idx = (c.to_digit(10).unwrap() as usize).saturating_sub(1);
-                    if idx < self.cached_agents.len() {
-                        let agent = &self.cached_agents[idx];
-                        self.active_agent = Some(agent.clone());
-                        let msg = Message::system(&format!("Selected agent: {} ({})", agent.name, agent.role.as_str()));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
+                    let idx = c.to_digit(10).unwrap_or(0) as usize;
+                    let idx = idx.saturating_sub(1);
+                    self.select_agent_by_index(idx);
                     self.mode = AppMode::Normal;
                 }
                 _ => {}
@@ -462,7 +448,7 @@ impl App {
                     self.sidebar.next_session(self.sessions.len());
                 }
                 KeyCode::Char('r') => {
-                    self.on_tick().await?;
+                    self.refresh_session_list().await;
                     info!("Manual sidebar refresh");
                 }
                 KeyCode::Char('l') | KeyCode::Enter => {
@@ -470,25 +456,8 @@ impl App {
                     let idx = self.sidebar.selected_session();
                     if idx < self.sessions.len() {
                         let session_id = self.sessions[idx].id.clone();
-                        match self.session_store.load(&session_id).await {
-                            Ok(session) => {
-                                self.session = session;
-                                self.chat.clear();
-                                for msg in &self.session.messages {
-                                    self.chat.add_message(msg.clone());
-                                }
-                                let msg = Message::system(&format!("Session '{}' loaded from sidebar.", self.session.title));
-                                self.session.add_message(msg.clone());
-                                self.chat.add_message(msg);
-                                info!("Loaded session {} from sidebar", session_id);
-                                self.mode = AppMode::Normal;
-                            }
-                            Err(e) => {
-                                let error_msg = format!("Failed to load session: {}", e);
-                                self.chat.add_message(Message::system(&error_msg));
-                                error!("{}", error_msg);
-                            }
-                        }
+                        self.load_session(&session_id).await;
+                        self.mode = AppMode::Normal;
                     }
                 }
                 _ => {}
@@ -604,20 +573,19 @@ impl App {
 
     /// Handle tick event
     async fn on_tick(&mut self) -> Result<()> {
-        // Update session list periodically
-        if let Ok(sessions) = self.session_store.list().await {
-            self.sessions = sessions;
-            self.sidebar.set_last_refresh(chrono::Local::now());
+        // Update session list periodically (every 10 seconds, not every tick)
+        if self.last_session_refresh.elapsed() >= Duration::from_secs(10) {
+            self.refresh_session_list().await;
         }
 
         // Update cached agent list
         {
             let registry = self.agent_registry.read().await;
-            self.cached_agents = registry.list().iter().map(|a| a.clone()).collect();
+            self.cached_agents = registry.list().to_vec();
         }
 
-        // Fetch memory keys if in MemoryManager mode or periodically
-        if self.mode == AppMode::MemoryManager || self.last_tick.elapsed() >= Duration::from_secs(5) {
+        // Fetch memory keys if in MemoryManager mode
+        if self.mode == AppMode::MemoryManager {
             if let Ok(keys) = self.memory_store.list("session").await {
                 self.memory_keys = keys;
             }
@@ -636,6 +604,50 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Refresh the session list from disk
+    async fn refresh_session_list(&mut self) {
+        if let Ok(sessions) = self.session_store.list().await {
+            self.sessions = sessions;
+            self.sidebar.set_last_refresh(chrono::Local::now());
+        }
+        self.last_session_refresh = Instant::now();
+    }
+
+    /// Load a session by ID, replacing the current session
+    async fn load_session(&mut self, session_id: &str) {
+        match self.session_store.load(session_id).await {
+            Ok(session) => {
+                self.session = session;
+                self.chat.clear();
+                for msg in &self.session.messages {
+                    self.chat.add_message(msg.clone());
+                }
+                self.add_system_message(&format!("Session '{}' loaded.", self.session.title));
+                info!("Loaded session {}", session_id);
+            }
+            Err(e) => {
+                self.add_system_message(&format!("Failed to load session: {}", e));
+                error!("Failed to load session {}: {}", session_id, e);
+            }
+        }
+    }
+
+    /// Select an agent by index from the cached agents list
+    fn select_agent_by_index(&mut self, idx: usize) {
+        if idx < self.cached_agents.len() {
+            let agent = &self.cached_agents[idx];
+            self.active_agent = Some(agent.clone());
+            self.add_system_message(&format!("Selected agent: {} ({})", agent.name, agent.role.as_str()));
+        }
+    }
+
+    /// Helper: add a system message to both session and chat
+    fn add_system_message(&mut self, text: &str) {
+        let msg = Message::system(text);
+        self.session.add_message(msg.clone());
+        self.chat.add_message(msg);
     }
 
     /// Submit the current input
@@ -774,7 +786,13 @@ impl App {
 
     /// Execute a slash command
     async fn execute_command(&mut self) -> Result<()> {
-        let content = self.input.get_content();
+        let raw_content = self.input.get_content();
+        // Prepend "/" because command mode entry consumes the slash character
+        let content = if raw_content.starts_with('/') {
+            raw_content
+        } else {
+            format!("/{}", raw_content)
+        };
         let parts: Vec<&str> = content.split_whitespace().collect();
         
         if parts.is_empty() {
@@ -785,7 +803,7 @@ impl App {
         let args = &parts[1..];
 
         match command {
-            "/help" => {
+            "/help" | "help" => {
                 let help_text = r#"Available commands:
 /help - Show this help message
 /mode auto - Enable automatic agent routing
@@ -935,28 +953,9 @@ impl App {
             }
             "/load" => {
                 if let Some(id) = args.first() {
-                    match self.session_store.load(id).await {
-                        Ok(session) => {
-                            self.session = session;
-                            self.chat.clear();
-                            // Reload all messages into chat
-                            for msg in &self.session.messages {
-                                self.chat.add_message(msg.clone());
-                            }
-                            let msg = Message::system(&format!("Session '{}' loaded.", self.session.title));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        Err(e) => {
-                            let msg = Message::system(&format!("Failed to load session: {}", e));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
+                    self.load_session(id).await;
                 } else {
-                    let msg = Message::system("Usage: /load <session_id>");
-                    self.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
+                    self.add_system_message("Usage: /load <session_id>");
                 }
             }
             "/sessions" => {
@@ -1247,7 +1246,7 @@ impl App {
         };
 
         let status = format!(
-            " [{}] | Messages: {} | Press Ctrl+C to quit | Ctrl+B: toggle sidebar | Ctrl+H: help ",
+            " [{}] | Messages: {} | Ctrl+C: quit | Ctrl+B: sidebar | /help: commands ",
             mode_text,
             self.session.messages.len()
         );

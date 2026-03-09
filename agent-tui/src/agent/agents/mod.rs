@@ -27,6 +27,7 @@ pub fn initialize_default_agents(registry: &mut crate::agent::AgentRegistry) {
 
 /// Review comment from ReviewerAgent
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(dead_code)]
 pub struct ReviewComment {
     pub file_path: Option<String>,
     pub line_number: Option<u32>,
@@ -37,6 +38,7 @@ pub struct ReviewComment {
 
 /// Severity level of a review comment
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ReviewSeverity {
     Critical,
     Major,
@@ -46,6 +48,7 @@ pub enum ReviewSeverity {
 }
 
 impl ReviewSeverity {
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "critical" | "blocker" | "error" => ReviewSeverity::Critical,
@@ -60,6 +63,7 @@ impl ReviewSeverity {
 
 /// Review result with scores and comments
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(dead_code)]
 pub struct ReviewResult {
     pub quality_score: u8,
     pub security_score: u8,

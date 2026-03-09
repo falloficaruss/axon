@@ -751,7 +751,7 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{TaskType, TaskStatus, AgentRole};
+    use crate::types::{TaskType, AgentRole};
 
     // ==================== Router Tests ====================
 
