@@ -76,6 +76,10 @@ pub struct CodebaseSummary {
     pub entry_points: Vec<String>,
     /// Dependencies detected
     pub dependencies: Vec<String>,
+    /// Discovered files from response (e.g., "File: path/to/file")
+    pub discovered_files: Vec<String>,
+    /// Discovered symbols from response (e.g., "Symbol: my_func")
+    pub discovered_symbols: Vec<String>,
 }
 
 /// Explorer agent for codebase exploration
@@ -165,6 +169,14 @@ impl ExplorerAgent {
             "dependencies".to_string(),
             serde_json::json!(summary.dependencies),
         );
+        metadata.insert(
+            "discovered_files".to_string(),
+            serde_json::json!(summary.discovered_files),
+        );
+        metadata.insert(
+            "discovered_symbols".to_string(),
+            serde_json::json!(summary.discovered_symbols),
+        );
 
         Ok(TaskResult {
             success: true,
@@ -193,6 +205,8 @@ impl ExplorerAgent {
             directories: Vec::new(),
             entry_points: Vec::new(),
             dependencies: Vec::new(),
+            discovered_files: Vec::new(),
+            discovered_symbols: Vec::new(),
         };
 
         // Try to extract numbers from patterns like "X files" or "X lines"
@@ -208,6 +222,22 @@ impl ExplorerAgent {
         if let Some(cap) = lines_re.captures(response) {
             if let Some(n) = cap.get(1).and_then(|m| m.as_str().parse().ok()) {
                 summary.total_lines = n;
+            }
+        }
+
+        // Extract discovered files from patterns like "File: path" or "* File: path"
+        let file_re = Regex::new(r"(?:^|\n)\*?\s*File:\s*(\S+)").unwrap();
+        for cap in file_re.captures_iter(response) {
+            if let Some(file) = cap.get(1) {
+                summary.discovered_files.push(file.as_str().to_string());
+            }
+        }
+
+        // Extract discovered symbols from patterns like "Symbol: name" or "* Symbol: name"
+        let symbol_re = Regex::new(r"(?:^|\n)\*?\s*Symbol:\s*(\S+)").unwrap();
+        for cap in symbol_re.captures_iter(response) {
+            if let Some(symbol) = cap.get(1) {
+                summary.discovered_symbols.push(symbol.as_str().to_string());
             }
         }
 
@@ -414,7 +444,13 @@ impl ExplorerAgent {
     fn count_imports(content: &str, language: Option<&str>) -> usize {
         match language {
             Some("rust") => content.matches("use ").count(),
-            Some("python") => content.matches("import ").count() + content.matches("from ").count(),
+            Some("python") => {
+                // Count import statements (lines starting with 'import ' or 'from ')
+                content.lines().filter(|line| {
+                    let trimmed = line.trim();
+                    trimmed.starts_with("import ") || trimmed.starts_with("from ")
+                }).count()
+            },
             Some("javascript") | Some("typescript") => {
                 content.matches("import ").count() + content.matches("require(").count()
             }
@@ -610,6 +646,8 @@ impl ExplorerAgent {
             directories: Vec::new(),
             entry_points: Vec::new(),
             dependencies: Vec::new(),
+            discovered_files: Vec::new(),
+            discovered_symbols: Vec::new(),
         };
 
         // Count files by language

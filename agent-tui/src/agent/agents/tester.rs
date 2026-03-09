@@ -150,14 +150,11 @@ impl TesterAgent {
     fn handle_test_generation(llm_response: &str) -> Result<TaskResult> {
         let test_files = Self::extract_test_files(llm_response)?;
 
-        if test_files.is_empty() {
-            return Ok(TaskResult {
-                success: true,
-                output: llm_response.to_string(),
-                error: None,
-                metadata: HashMap::new(),
-            });
-        }
+        // Parse test results from response (e.g., "[PASS] test_1", "[FAIL] test_2")
+        let pass_re = Regex::new(r"(?i)\[PASS\]").unwrap();
+        let fail_re = Regex::new(r"(?i)\[FAIL\]").unwrap();
+        let passed_count = pass_re.find_iter(llm_response).count();
+        let failed_count = fail_re.find_iter(llm_response).count();
 
         let mut metadata = HashMap::new();
         let mut generated_files = Vec::new();
@@ -177,11 +174,27 @@ impl TesterAgent {
             "test_count".to_string(),
             serde_json::json!(test_files.len()),
         );
+        metadata.insert(
+            "passed_count".to_string(),
+            serde_json::json!(passed_count),
+        );
+        metadata.insert(
+            "failed_count".to_string(),
+            serde_json::json!(failed_count),
+        );
+        metadata.insert(
+            "generated_tests_count".to_string(),
+            serde_json::json!(test_files.len()),
+        );
 
         Ok(TaskResult {
-            success: true,
+            success: failed_count == 0,
             output: llm_response.to_string(),
-            error: None,
+            error: if failed_count > 0 {
+                Some(format!("{} tests failed", failed_count))
+            } else {
+                None
+            },
             metadata,
         })
     }
@@ -190,6 +203,24 @@ impl TesterAgent {
     fn handle_test_execution(llm_response: &str) -> Result<TaskResult> {
         // Parse the response for test execution results
         let execution_result = Self::parse_test_output(llm_response)?;
+
+        // Also parse [PASS]/[FAIL] patterns for passed_count/failed_count
+        let pass_re = Regex::new(r"(?i)\[PASS\]").unwrap();
+        let fail_re = Regex::new(r"(?i)\[FAIL\]").unwrap();
+        let passed_count = pass_re.find_iter(llm_response).count();
+        let failed_count = fail_re.find_iter(llm_response).count();
+
+        // Extract test files for generated_tests_count
+        let test_files = Self::extract_test_files(llm_response).unwrap_or_default();
+        
+        // Count code blocks as generated tests (fallback if no test files extracted)
+        let code_block_re = Regex::new(r"```\w*\n").unwrap();
+        let code_block_count = code_block_re.find_iter(llm_response).count();
+        let generated_tests_count = if test_files.is_empty() && code_block_count > 0 {
+            code_block_count
+        } else {
+            test_files.len()
+        };
 
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -214,12 +245,25 @@ impl TesterAgent {
                 (execution_result.passed as f32 / execution_result.total as f32 * 100.0).round()
             ),
         );
+        // Add additional metadata keys expected by tests
+        metadata.insert(
+            "passed_count".to_string(),
+            serde_json::json!(passed_count),
+        );
+        metadata.insert(
+            "failed_count".to_string(),
+            serde_json::json!(failed_count),
+        );
+        metadata.insert(
+            "generated_tests_count".to_string(),
+            serde_json::json!(generated_tests_count),
+        );
 
         Ok(TaskResult {
-            success: execution_result.failed == 0,
+            success: execution_result.failed == 0 && failed_count == 0,
             output: llm_response.to_string(),
-            error: if execution_result.failed > 0 {
-                Some(format!("{} tests failed", execution_result.failed))
+            error: if execution_result.failed > 0 || failed_count > 0 {
+                Some(format!("{} tests failed", execution_result.failed + failed_count))
             } else {
                 None
             },

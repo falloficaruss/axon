@@ -180,6 +180,16 @@ impl PlannerAgent {
             .sum();
         metadata.insert("total_effort".to_string(), serde_json::json!(total_effort));
 
+        // Add plan metadata for tests
+        metadata.insert(
+            "plan".to_string(),
+            serde_json::json!(llm_response),
+        );
+        metadata.insert(
+            "has_structured_plan".to_string(),
+            serde_json::json!(!planning_result.subtasks.is_empty()),
+        );
+
         Ok(TaskResult {
             success: true,
             output: llm_response.to_string(),
@@ -215,13 +225,13 @@ impl PlannerAgent {
             }
         }
 
-        // Extract strategy
+        // Extract strategy - check for 'hybrid' first since 'parallel' may appear in hybrid descriptions
         if let Some(strategy_section) = Self::extract_section(response, "Strategy") {
             let strategy_lower = strategy_section.to_lowercase();
-            if strategy_lower.contains("parallel") {
-                strategy = ExecutionStrategy::Parallel;
-            } else if strategy_lower.contains("hybrid") {
+            if strategy_lower.contains("hybrid") {
                 strategy = ExecutionStrategy::Hybrid;
+            } else if strategy_lower.contains("parallel") {
+                strategy = ExecutionStrategy::Parallel;
             }
         }
 

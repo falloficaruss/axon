@@ -36,3 +36,8 @@ Thumbs.db
 TODOS.md
 AGENT.md
 PLAN.md
+
+# Watchman and Poltergeist
+.watchmanconfig
+info
+poltergeist.config.json
