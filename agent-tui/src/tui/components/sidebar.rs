@@ -8,6 +8,8 @@ use ratatui::{
     Frame,
 };
 
+use chrono::{DateTime, Local};
+
 use crate::types::{Agent, AgentState, Session, SessionMode};
 use crate::persistence::SessionMetadata;
 
@@ -19,6 +21,8 @@ pub struct Sidebar {
     selected_agent: usize,
     /// Whether the sidebar is focused
     pub focused: bool,
+    /// Last refresh timestamp
+    last_refresh: Option<DateTime<Local>>,
 }
 
 impl Sidebar {
@@ -27,7 +31,13 @@ impl Sidebar {
             selected_session: 0,
             selected_agent: 0,
             focused: false,
+            last_refresh: None,
         }
+    }
+
+    /// Set the last refresh timestamp
+    pub fn set_last_refresh(&mut self, timestamp: DateTime<Local>) {
+        self.last_refresh = Some(timestamp);
     }
 
     /// Draw the sidebar
@@ -42,7 +52,11 @@ impl Sidebar {
     ) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(12), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(12),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         // Agent status section
@@ -50,6 +64,15 @@ impl Sidebar {
 
         // Sessions section
         self.draw_sessions(frame, layout[1], sessions, session.id.as_str());
+
+        // Refresh timestamp at the bottom
+        if let Some(ts) = self.last_refresh {
+            let refresh_text = format!("Refreshed: {}", ts.format("%H:%M:%S"));
+            let paragraph = Paragraph::new(Line::from(vec![
+                Span::styled(refresh_text, Style::default().fg(Color::DarkGray)),
+            ]));
+            frame.render_widget(paragraph, layout[2]);
+        }
     }
 
     /// Draw agent status panel
@@ -188,6 +211,7 @@ mod tests {
         let sidebar = Sidebar::new();
         assert_eq!(sidebar.selected_session, 0);
         assert_eq!(sidebar.selected_agent, 0);
+        assert!(sidebar.last_refresh.is_none());
     }
 
     #[test]
@@ -195,6 +219,15 @@ mod tests {
         let sidebar = Sidebar::default();
         assert_eq!(sidebar.selected_session, 0);
         assert_eq!(sidebar.selected_agent, 0);
+        assert!(sidebar.last_refresh.is_none());
+    }
+
+    #[test]
+    fn test_sidebar_set_last_refresh() {
+        let mut sidebar = Sidebar::new();
+        let now = Local::now();
+        sidebar.set_last_refresh(now);
+        assert_eq!(sidebar.last_refresh, Some(now));
     }
 
     #[test]

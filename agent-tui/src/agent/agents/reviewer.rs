@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
+use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
 /// Severity level for a code review issue
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +70,12 @@ pub struct ReviewResult {
 pub struct ReviewerAgent;
 
 impl TaskProcessor for ReviewerAgent {
-    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
+    fn process_task(
+        &self,
+        task: &Task,
+        response: &str,
+        _shared_memory: Arc<SharedMemory>,
+    ) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -104,7 +109,7 @@ impl ReviewerAgent {
                 ### [Severity] Category\n\
                 - **Line X**: Issue description\n\
                   Suggestion: [fix]\n\n\
-                ## Quality Score: X/10"
+                ## Quality Score: X/10",
             )
     }
 
@@ -133,21 +138,40 @@ impl ReviewerAgent {
             "issue_count".to_string(),
             serde_json::json!(review.issues.len()),
         );
-        metadata.insert(
-            "files".to_string(),
-            serde_json::json!(review.files),
-        );
+        metadata.insert("files".to_string(), serde_json::json!(review.files));
 
         // Count issues by severity
-        let critical_count = review.issues.iter().filter(|i| i.severity == IssueSeverity::Critical).count();
-        let major_count = review.issues.iter().filter(|i| i.severity == IssueSeverity::Major).count();
-        let minor_count = review.issues.iter().filter(|i| i.severity == IssueSeverity::Minor).count();
-        let suggestion_count = review.issues.iter().filter(|i| i.severity == IssueSeverity::Suggestion).count();
+        let critical_count = review
+            .issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Critical)
+            .count();
+        let major_count = review
+            .issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Major)
+            .count();
+        let minor_count = review
+            .issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Minor)
+            .count();
+        let suggestion_count = review
+            .issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Suggestion)
+            .count();
 
-        metadata.insert("critical_issues".to_string(), serde_json::json!(critical_count));
+        metadata.insert(
+            "critical_issues".to_string(),
+            serde_json::json!(critical_count),
+        );
         metadata.insert("major_issues".to_string(), serde_json::json!(major_count));
         metadata.insert("minor_issues".to_string(), serde_json::json!(minor_count));
-        metadata.insert("suggestions".to_string(), serde_json::json!(suggestion_count));
+        metadata.insert(
+            "suggestions".to_string(),
+            serde_json::json!(suggestion_count),
+        );
 
         Ok(TaskResult {
             success: true,
@@ -218,10 +242,11 @@ impl ReviewerAgent {
         // Simple line-by-line parsing for issues
         for line in response.lines() {
             let line_trimmed = line.trim();
-            
+
             // Look for line number patterns
             let line_re = Regex::new(r"Line\s*(\d+)").unwrap();
-            let line_num = line_re.captures(line_trimmed)
+            let line_num = line_re
+                .captures(line_trimmed)
                 .and_then(|cap| cap.get(1))
                 .and_then(|m| m.as_str().parse::<usize>().ok());
 
@@ -230,7 +255,9 @@ impl ReviewerAgent {
                     // Extract category if present (word after severity)
                     let category = if let Some(idx) = line_trimmed.find(pattern) {
                         let after = &line_trimmed[idx + pattern.len()..].trim();
-                        after.split_whitespace().next()
+                        after
+                            .split_whitespace()
+                            .next()
                             .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()))
                             .filter(|s| !s.is_empty())
                             .unwrap_or("general")
@@ -283,10 +310,12 @@ impl ReviewerAgent {
         let re = Regex::new(r"```(\w+)?(?::([^\n]+))?\n([\s\S]*?)```").unwrap();
 
         for cap in re.captures_iter(text) {
-            let file_path = cap.get(2)
+            let file_path = cap
+                .get(2)
                 .map(|m| m.as_str().trim().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
-            let code = cap.get(3)
+            let code = cap
+                .get(3)
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
 
@@ -320,7 +349,7 @@ Good code overall with minor issues.
 ## Quality Score: 7/10"#;
 
         let review = ReviewerAgent::parse_review_response(response).unwrap();
-        
+
         assert_eq!(review.quality_score, 7);
         assert!(!review.issues.is_empty());
         assert!(review.summary.contains("Good code"));
@@ -334,7 +363,7 @@ Excellent code! No issues found.
 ## Quality Score: 10/10"#;
 
         let review = ReviewerAgent::parse_review_response(response).unwrap();
-        
+
         assert_eq!(review.quality_score, 10);
         // Should have a placeholder suggestion
         assert!(!review.issues.is_empty());
@@ -355,7 +384,7 @@ def helper():
 ```"#;
 
         let files = ReviewerAgent::extract_code_for_review(text).unwrap();
-        
+
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].0, "src/main.rs");
         assert!(files[0].1.contains("fn main()"));
@@ -375,7 +404,10 @@ Code looks good.
         let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
-        assert_eq!(result.metadata.get("quality_score").unwrap(), &serde_json::json!(8));
+        assert_eq!(
+            result.metadata.get("quality_score").unwrap(),
+            &serde_json::json!(8)
+        );
     }
 
     #[test]
@@ -387,6 +419,9 @@ Code looks good.
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent.process_task(&task, response, shared_memory);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unsupported task type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported task type"));
     }
 }

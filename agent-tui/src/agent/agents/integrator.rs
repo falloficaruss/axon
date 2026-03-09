@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
+use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
 /// A single result from an agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +49,12 @@ pub struct SynthesisResult {
 pub struct IntegratorAgent;
 
 impl TaskProcessor for IntegratorAgent {
-    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
+    fn process_task(
+        &self,
+        task: &Task,
+        response: &str,
+        _shared_memory: Arc<SharedMemory>,
+    ) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -87,7 +92,7 @@ impl IntegratorAgent {
                 ## Quality Assessment\n\
                 [Confidence level and any concerns]\n\n\
                 ## Recommendations\n\
-                [Next steps or follow-up actions]"
+                [Next steps or follow-up actions]",
             )
     }
 
@@ -112,10 +117,7 @@ impl IntegratorAgent {
             "confidence".to_string(),
             serde_json::json!(synthesis.confidence),
         );
-        metadata.insert(
-            "summary".to_string(),
-            serde_json::json!(synthesis.summary),
-        );
+        metadata.insert("summary".to_string(), serde_json::json!(synthesis.summary));
         metadata.insert(
             "successful_contributions".to_string(),
             serde_json::json!(synthesis.successful_contributions),
@@ -196,12 +198,14 @@ impl IntegratorAgent {
                     confidence = n.min(100);
                 }
             }
-            
+
             // Look for confidence indicators
             let section_lower = section.to_lowercase();
             if section_lower.contains("high confidence") || section_lower.contains("confident") {
                 confidence = confidence.max(80);
-            } else if section_lower.contains("low confidence") || section_lower.contains("uncertain") {
+            } else if section_lower.contains("low confidence")
+                || section_lower.contains("uncertain")
+            {
                 confidence = confidence.min(40);
             }
         }
@@ -210,8 +214,15 @@ impl IntegratorAgent {
         if let Some(section) = Self::extract_section(response, "Recommendations") {
             for line in section.lines() {
                 let line = line.trim();
-                if line.starts_with('-') || line.starts_with('*') || line.starts_with(|c: char| c.is_numeric()) {
-                    let content = line.trim_start_matches(|c: char| c == '-' || c == '*' || c.is_numeric() || c == '.').trim();
+                if line.starts_with('-')
+                    || line.starts_with('*')
+                    || line.starts_with(|c: char| c.is_numeric())
+                {
+                    let content = line
+                        .trim_start_matches(|c: char| {
+                            c == '-' || c == '*' || c.is_numeric() || c == '.'
+                        })
+                        .trim();
                     if !content.is_empty() {
                         recommendations.push(content.to_string());
                     }
@@ -257,9 +268,9 @@ impl IntegratorAgent {
     /// Combine multiple task results into a single input for the integrator
     pub fn combine_results(results: &[AgentResult]) -> String {
         let mut combined = String::new();
-        
+
         combined.push_str("# Agent Results Summary\n\n");
-        
+
         // Group by success/failure
         let successful: Vec<&AgentResult> = results.iter().filter(|r| r.success).collect();
         let failed: Vec<&AgentResult> = results.iter().filter(|r| !r.success).collect();
@@ -294,16 +305,25 @@ impl IntegratorAgent {
     /// Create a structured summary from multiple results
     pub fn create_summary(results: &[AgentResult]) -> String {
         let mut summary = String::new();
-        
+
         summary.push_str(&format!("## Overview\n\n"));
         summary.push_str(&format!("Total agents: {}\n", results.len()));
-        summary.push_str(&format!("Successful: {}\n", results.iter().filter(|r| r.success).count()));
-        summary.push_str(&format!("Failed: {}\n\n", results.iter().filter(|r| !r.success).count()));
+        summary.push_str(&format!(
+            "Successful: {}\n",
+            results.iter().filter(|r| r.success).count()
+        ));
+        summary.push_str(&format!(
+            "Failed: {}\n\n",
+            results.iter().filter(|r| !r.success).count()
+        ));
 
         // Group by agent type
         let mut by_agent: HashMap<String, Vec<&AgentResult>> = HashMap::new();
         for result in results {
-            by_agent.entry(result.agent.clone()).or_default().push(result);
+            by_agent
+                .entry(result.agent.clone())
+                .or_default()
+                .push(result);
         }
 
         summary.push_str("## By Agent\n\n");
@@ -322,7 +342,7 @@ impl IntegratorAgent {
     /// Detect and report conflicts between results
     pub fn detect_conflicts(results: &[AgentResult]) -> Vec<String> {
         let mut conflicts = Vec::new();
-        
+
         // Simple conflict detection: look for contradictory statements
         let contradiction_pairs = [
             ("should", "should not"),
@@ -334,17 +354,19 @@ impl IntegratorAgent {
         ];
 
         let outputs: Vec<&str> = results.iter().map(|r| r.output.as_str()).collect();
-        
+
         for (i, output1) in outputs.iter().enumerate() {
             for output2 in outputs.iter().skip(i + 1) {
                 let lower1 = output1.to_lowercase();
                 let lower2 = output2.to_lowercase();
-                
+
                 for (pos, neg) in &contradiction_pairs {
                     if lower1.contains(pos) && lower2.contains(neg) {
                         conflicts.push(format!(
                             "Potential conflict: '{}' vs '{}' on '{}'",
-                            results[i].task, results[outputs.iter().position(|&o| o == *output2).unwrap()].task, pos
+                            results[i].task,
+                            results[outputs.iter().position(|&o| o == *output2).unwrap()].task,
+                            pos
                         ));
                     }
                 }
@@ -398,7 +420,7 @@ High confidence (85%)
 - Review the code changes"#;
 
         let result = IntegratorAgent::parse_synthesis_response(&task, response).unwrap();
-        
+
         assert!(result.summary.contains("Successfully integrated"));
         assert_eq!(result.combined_output, "Final combined result here.");
         assert!(result.confidence >= 80);
@@ -432,7 +454,7 @@ High confidence (85%)
         ];
 
         let combined = IntegratorAgent::combine_results(&results);
-        
+
         assert!(combined.contains("Successful Results"));
         assert!(combined.contains("Failed/Partial Results"));
         assert!(combined.contains("coder"));
@@ -460,7 +482,7 @@ High confidence (85%)
         ];
 
         let summary = IntegratorAgent::create_summary(&results);
-        
+
         assert!(summary.contains("Total agents: 2"));
         assert!(summary.contains("Successful: 1"));
         assert!(summary.contains("Failed: 1"));
@@ -487,7 +509,7 @@ High confidence (85%)
         ];
 
         let conflicts = IntegratorAgent::detect_conflicts(&results);
-        
+
         assert!(!conflicts.is_empty());
         assert!(conflicts.iter().any(|c| c.contains("Potential conflict")));
     }
@@ -508,10 +530,14 @@ Confidence: 90%
 - Verify the changes"#;
 
         let agent = IntegratorAgent;
-        let result = agent.process_task(&task, response).unwrap();
-        
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
+
         assert!(result.success);
-        assert_eq!(result.metadata.get("confidence").unwrap(), &serde_json::json!(90));
+        assert_eq!(
+            result.metadata.get("confidence").unwrap(),
+            &serde_json::json!(90)
+        );
     }
 
     #[test]
@@ -527,11 +553,15 @@ Partial output.
 Low confidence: 30%"#;
 
         let agent = IntegratorAgent;
-        let result = agent.process_task(&task, response).unwrap();
-        
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory).unwrap();
+
         assert!(!result.success);
         assert!(result.error.is_some());
-        assert_eq!(result.metadata.get("confidence").unwrap(), &serde_json::json!(30));
+        assert_eq!(
+            result.metadata.get("confidence").unwrap(),
+            &serde_json::json!(30)
+        );
     }
 
     #[test]
@@ -540,7 +570,8 @@ Low confidence: 30%"#;
         let response = "Some response";
 
         let agent = IntegratorAgent;
-        let result = agent.process_task(&task, response);
+        let shared_memory = Arc::new(SharedMemory::new());
+        let result = agent.process_task(&task, response, shared_memory);
         assert!(result.is_err());
     }
 }

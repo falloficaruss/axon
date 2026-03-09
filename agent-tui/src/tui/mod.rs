@@ -12,9 +12,9 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Style, Modifier},
     text::Line,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::{
@@ -87,6 +87,10 @@ pub struct App {
     tick_rate: Duration,
     /// Last auto-save time
     last_save: Instant,
+    /// Memory keys for memory manager
+    memory_keys: Vec<String>,
+    /// Selected memory key index
+    selected_memory_key: usize,
     /// Handle to the currently running task (for cancellation)
     current_task_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -199,6 +203,8 @@ impl App {
             last_tick: Instant::now(),
             tick_rate: Duration::from_millis(250),
             last_save: Instant::now(),
+            memory_keys: Vec::new(),
+            selected_memory_key: 0,
             current_task_handle: None,
         })
     }
@@ -433,6 +439,22 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.mode = AppMode::Normal;
                 }
+                KeyCode::Up | KeyCode::Char('p') => {
+                    if self.selected_memory_key > 0 {
+                        self.selected_memory_key -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('n') => {
+                    if self.selected_memory_key < self.memory_keys.len().saturating_sub(1) {
+                        self.selected_memory_key += 1;
+                    }
+                }
+                KeyCode::Char('r') => {
+                    if let Ok(keys) = self.memory_store.list("session").await {
+                        self.memory_keys = keys;
+                        info!("Manual memory refresh");
+                    }
+                }
                 _ => {}
             },
             AppMode::Sidebar => match key.code {
@@ -444,6 +466,10 @@ impl App {
                 }
                 KeyCode::Char('n') | KeyCode::Down => {
                     self.sidebar.next_session(self.sessions.len());
+                }
+                KeyCode::Char('r') => {
+                    self.on_tick().await?;
+                    info!("Manual sidebar refresh");
                 }
                 KeyCode::Char('l') | KeyCode::Enter => {
                     // Load selected session from sidebar
@@ -587,6 +613,14 @@ impl App {
         // Update session list periodically
         if let Ok(sessions) = self.session_store.list().await {
             self.sessions = sessions;
+            self.sidebar.set_last_refresh(chrono::Local::now());
+        }
+
+        // Fetch memory keys if in MemoryManager mode or periodically
+        if self.mode == AppMode::MemoryManager || self.last_tick.elapsed() >= Duration::from_secs(5) {
+            if let Ok(keys) = self.memory_store.list("session").await {
+                self.memory_keys = keys;
+            }
         }
 
         // Handle auto-save
@@ -1148,18 +1182,58 @@ impl App {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow));
 
-        let text = vec![
-            Line::from("Memory management not yet implemented."),
-            Line::from(""),
-            Line::from("Press ESC or 'q' to close"),
-        ];
+        if self.memory_keys.is_empty() {
+            let text = vec![
+                Line::from("No memory entries found."),
+                Line::from(""),
+                Line::from("Press ESC or 'q' to close, 'r' to refresh"),
+            ];
 
-        let paragraph = Paragraph::new(text)
-            .block(block)
-            .wrap(Wrap { trim: true });
+            let paragraph = Paragraph::new(text)
+                .block(block)
+                .wrap(Wrap { trim: true });
 
-        frame.render_widget(Clear, area);
-        frame.render_widget(paragraph, area);
+            frame.render_widget(Clear, area);
+            frame.render_widget(paragraph, area);
+        } else {
+            let list_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                .split(area);
+
+            let items: Vec<ListItem> = self.memory_keys
+                .iter()
+                .enumerate()
+                .map(|(i, key)| {
+                    let style = if i == self.selected_memory_key {
+                        Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(key.clone()).style(style)
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(Block::default().title(" Keys ").borders(Borders::ALL))
+                .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+            frame.render_widget(Clear, area);
+            frame.render_widget(list, list_layout[0]);
+
+            // Show value of selected key
+            if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
+                // We need to fetch the value synchronously or have it pre-cached
+                // For now, let's just say "Press Enter to view" or try to show it if we can
+                // Since this is a draw call, we can't await. 
+                // In a real app we'd have the values cached or use a reactive state.
+                let value_text = "Value view not yet implemented (needs async fetch)";
+                let paragraph = Paragraph::new(value_text)
+                    .block(Block::default().title(format!(" Value: {} ", key)).borders(Borders::ALL))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(paragraph, list_layout[1]);
+            }
+        }
     }
 
     /// Draw status bar

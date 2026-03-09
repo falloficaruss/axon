@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType, Subtask, Plan};
 use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
+use crate::types::{Agent, AgentRole, Capability, Plan, Subtask, Task, TaskResult, TaskType};
 
 /// A dependency relationship between subtasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +67,12 @@ pub struct SubtaskInfo {
 pub struct PlannerAgent;
 
 impl TaskProcessor for PlannerAgent {
-    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
+    fn process_task(
+        &self,
+        task: &Task,
+        response: &str,
+        _shared_memory: Arc<SharedMemory>,
+    ) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -76,7 +81,9 @@ impl PlannerAgent {
     /// Create a new PlannerAgent
     pub fn create() -> Agent {
         Agent::new("planner", AgentRole::Planner, "gpt-4o")
-            .with_description("Plans and orchestrates multi-agent workflows through task decomposition")
+            .with_description(
+                "Plans and orchestrates multi-agent workflows through task decomposition",
+            )
             .with_capabilities(vec![
                 Capability::Plan,
                 Capability::Explore,
@@ -111,7 +118,7 @@ impl PlannerAgent {
                 ## Strategy\n\
                 [Sequential/Parallel/Hybrid] - [reasoning]\n\n\
                 ## Complexity\n\
-                [1-10] - [justification]"
+                [1-10] - [justification]",
             )
     }
 
@@ -166,13 +173,12 @@ impl PlannerAgent {
         );
 
         // Calculate total estimated effort
-        let total_effort: u32 = planning_result.subtasks.iter()
+        let total_effort: u32 = planning_result
+            .subtasks
+            .iter()
             .filter_map(|s| s.effort.map(|e| e as u32))
             .sum();
-        metadata.insert(
-            "total_effort".to_string(),
-            serde_json::json!(total_effort),
-        );
+        metadata.insert("total_effort".to_string(), serde_json::json!(total_effort));
 
         Ok(TaskResult {
             success: true,
@@ -277,21 +283,31 @@ impl PlannerAgent {
     /// Parse subtasks from a plan section
     fn parse_subtasks(plan_section: &str) -> Vec<SubtaskInfo> {
         let mut subtasks = Vec::new();
-        
+
         // Pattern to match numbered list items like "1. [task] → [agent]" or "1. [task]"
-        let line_pattern = regex::Regex::new(r"^\d+\.\s*(.+?)(?:\s*→\s*|\s*-\s*)(\w+)?(?:\s*\(depends on:\s*([^)]*)\))?").unwrap();
+        let line_pattern = regex::Regex::new(
+            r"^\d+\.\s*(.+?)(?:\s*→\s*|\s*-\s*)(\w+)?(?:\s*\(depends on:\s*([^)]*)\))?",
+        )
+        .unwrap();
 
         for line in plan_section.lines() {
             let line = line.trim();
             if let Some(cap) = line_pattern.captures(line) {
-                let description = cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+                let description = cap
+                    .get(1)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default();
                 let suggested_agent = cap.get(2).map(|m| m.as_str().trim().to_lowercase());
-                
-                let dependencies = cap.get(3)
-                    .map(|m| m.as_str().split(',')
-                        .filter_map(|s| s.trim().parse::<usize>().ok())
-                        .map(|i| i.saturating_sub(1)) // Convert 1-indexed to 0-indexed
-                        .collect())
+
+                let dependencies = cap
+                    .get(3)
+                    .map(|m| {
+                        m.as_str()
+                            .split(',')
+                            .filter_map(|s| s.trim().parse::<usize>().ok())
+                            .map(|i| i.saturating_sub(1)) // Convert 1-indexed to 0-indexed
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 // Infer task type from description
@@ -313,7 +329,10 @@ impl PlannerAgent {
                 let line = line.trim();
                 if !line.is_empty() && !line.starts_with('-') && !line.starts_with('*') {
                     subtasks.push(SubtaskInfo {
-                        description: line.trim_start_matches(|c: char| c.is_numeric() || c == '.' || c == '-').trim().to_string(),
+                        description: line
+                            .trim_start_matches(|c: char| c.is_numeric() || c == '.' || c == '-')
+                            .trim()
+                            .to_string(),
                         task_type: "General".to_string(),
                         suggested_agent: None,
                         effort: Some(5),
@@ -329,20 +348,40 @@ impl PlannerAgent {
     /// Infer task type from description
     fn infer_task_type(description: &str) -> String {
         let desc_lower = description.to_lowercase();
-        
-        if desc_lower.contains("explor") || desc_lower.contains("analyz") || desc_lower.contains("find") {
+
+        if desc_lower.contains("explor")
+            || desc_lower.contains("analyz")
+            || desc_lower.contains("find")
+        {
             "Exploration".to_string()
         } else if desc_lower.contains("test") || desc_lower.contains("spec") {
             "TestGeneration".to_string()
-        } else if desc_lower.contains("review") || desc_lower.contains("audit") || desc_lower.contains("check") {
+        } else if desc_lower.contains("review")
+            || desc_lower.contains("audit")
+            || desc_lower.contains("check")
+        {
             "CodeReview".to_string()
-        } else if desc_lower.contains("write") || desc_lower.contains("create") || desc_lower.contains("implement") || desc_lower.contains("develop") {
+        } else if desc_lower.contains("write")
+            || desc_lower.contains("create")
+            || desc_lower.contains("implement")
+            || desc_lower.contains("develop")
+        {
             "CodeGeneration".to_string()
-        } else if desc_lower.contains("edit") || desc_lower.contains("modify") || desc_lower.contains("update") || desc_lower.contains("refactor") {
+        } else if desc_lower.contains("edit")
+            || desc_lower.contains("modify")
+            || desc_lower.contains("update")
+            || desc_lower.contains("refactor")
+        {
             "CodeEdit".to_string()
-        } else if desc_lower.contains("synthes") || desc_lower.contains("combin") || desc_lower.contains("integrat") {
+        } else if desc_lower.contains("synthes")
+            || desc_lower.contains("combin")
+            || desc_lower.contains("integrat")
+        {
             "Synthesis".to_string()
-        } else if desc_lower.contains("plan") || desc_lower.contains("design") || desc_lower.contains("architect") {
+        } else if desc_lower.contains("plan")
+            || desc_lower.contains("design")
+            || desc_lower.contains("architect")
+        {
             "Planning".to_string()
         } else {
             "General".to_string()
@@ -352,8 +391,10 @@ impl PlannerAgent {
     /// Convert a PlanningResult to a Plan object
     pub fn planning_result_to_plan(result: PlanningResult, original_task: Task) -> Plan {
         let mut plan = Plan::new(original_task);
-        
-        let subtasks: Vec<Subtask> = result.subtasks.into_iter()
+
+        let subtasks: Vec<Subtask> = result
+            .subtasks
+            .into_iter()
             .map(|info| {
                 let task_type = match info.task_type.as_str() {
                     "CodeGeneration" => TaskType::CodeGeneration,
@@ -368,17 +409,19 @@ impl PlannerAgent {
                 };
 
                 let mut subtask = Subtask::new(&info.description, task_type);
-                
+
                 // Note: suggested_agent will be resolved to agent ID by the orchestrator
                 if let Some(agent_name) = info.suggested_agent {
                     subtask.suggested_agent = Some(agent_name);
                 }
-                
+
                 // Dependencies will be resolved after all subtasks are created
-                subtask.dependencies = info.dependencies.iter()
+                subtask.dependencies = info
+                    .dependencies
+                    .iter()
                     .map(|_| "unresolved".to_string())
                     .collect();
-                
+
                 subtask
             })
             .collect();
@@ -441,7 +484,7 @@ Parallel execution
 4. Review code → Reviewer (depends on: 2)"#;
 
         let subtasks = PlannerAgent::parse_subtasks(plan_section);
-        
+
         assert_eq!(subtasks.len(), 4);
         assert_eq!(subtasks[0].description, "Explore the codebase");
         assert_eq!(subtasks[0].suggested_agent, Some("explorer".to_string()));
@@ -451,12 +494,30 @@ Parallel execution
 
     #[test]
     fn test_infer_task_type() {
-        assert_eq!(PlannerAgent::infer_task_type("Explore the codebase"), "Exploration");
-        assert_eq!(PlannerAgent::infer_task_type("Write unit tests"), "TestGeneration");
-        assert_eq!(PlannerAgent::infer_task_type("Review the code"), "CodeReview");
-        assert_eq!(PlannerAgent::infer_task_type("Implement the feature"), "CodeGeneration");
-        assert_eq!(PlannerAgent::infer_task_type("Refactor the module"), "CodeEdit");
-        assert_eq!(PlannerAgent::infer_task_type("Combine results"), "Synthesis");
+        assert_eq!(
+            PlannerAgent::infer_task_type("Explore the codebase"),
+            "Exploration"
+        );
+        assert_eq!(
+            PlannerAgent::infer_task_type("Write unit tests"),
+            "TestGeneration"
+        );
+        assert_eq!(
+            PlannerAgent::infer_task_type("Review the code"),
+            "CodeReview"
+        );
+        assert_eq!(
+            PlannerAgent::infer_task_type("Implement the feature"),
+            "CodeGeneration"
+        );
+        assert_eq!(
+            PlannerAgent::infer_task_type("Refactor the module"),
+            "CodeEdit"
+        );
+        assert_eq!(
+            PlannerAgent::infer_task_type("Combine results"),
+            "Synthesis"
+        );
     }
 
     #[test]
@@ -477,7 +538,7 @@ Hybrid - some tasks can run in parallel after exploration
 6/10 - Medium complexity due to multiple components"#;
 
         let result = PlannerAgent::parse_planning_response(&task, response).unwrap();
-        
+
         assert_eq!(result.subtasks.len(), 3);
         assert_eq!(result.complexity, 6);
         assert_eq!(result.strategy, ExecutionStrategy::Hybrid);
@@ -499,8 +560,14 @@ Hybrid - some tasks can run in parallel after exploration
         let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
-        assert_eq!(result.metadata.get("subtask_count").unwrap(), &serde_json::json!(2));
-        assert_eq!(result.metadata.get("complexity").unwrap(), &serde_json::json!(5));
+        assert_eq!(
+            result.metadata.get("subtask_count").unwrap(),
+            &serde_json::json!(2)
+        );
+        assert_eq!(
+            result.metadata.get("complexity").unwrap(),
+            &serde_json::json!(5)
+        );
     }
 
     #[test]
@@ -541,7 +608,7 @@ Hybrid - some tasks can run in parallel after exploration
         };
 
         let plan = PlannerAgent::planning_result_to_plan(planning_result, original_task);
-        
+
         assert_eq!(plan.subtasks.len(), 2);
         assert!(!plan.execution_order.is_empty());
     }

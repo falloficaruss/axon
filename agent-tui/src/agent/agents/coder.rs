@@ -11,9 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
+use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
 /// Code block extracted from LLM response
 #[derive(Debug, Clone, PartialEq)]
@@ -52,7 +52,12 @@ pub enum FileOperation {
 pub struct CoderAgent;
 
 impl TaskProcessor for CoderAgent {
-    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
+    fn process_task(
+        &self,
+        task: &Task,
+        response: &str,
+        _shared_memory: Arc<SharedMemory>,
+    ) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -163,10 +168,7 @@ impl CoderAgent {
             "code_blocks".to_string(),
             serde_json::json!(code_blocks.len()),
         );
-        metadata.insert(
-            "edited_files".to_string(),
-            serde_json::json!(edited_files),
-        );
+        metadata.insert("edited_files".to_string(), serde_json::json!(edited_files));
 
         Ok(TaskResult {
             success: true,
@@ -183,21 +185,22 @@ impl CoderAgent {
     /// - ```language:path/to/file.ext\ncode\n```
     pub fn extract_code_blocks(text: &str) -> Result<Vec<CodeBlock>> {
         let mut blocks = Vec::new();
-        
+
         // Regex to match code blocks with optional file path
         // Format: ```language[:filepath]
         let re = Regex::new(r"```(\w+)(?::([^\n]+))?\n([\s\S]*?)```")
             .context("Failed to compile regex")?;
 
         for cap in re.captures_iter(text) {
-            let language = cap.get(1)
+            let language = cap
+                .get(1)
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_else(|| "text".to_string());
-            
-            let file_path = cap.get(2)
-                .map(|m| m.as_str().trim().to_string());
-            
-            let code = cap.get(3)
+
+            let file_path = cap.get(2).map(|m| m.as_str().trim().to_string());
+
+            let code = cap
+                .get(3)
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
 
@@ -220,15 +223,14 @@ impl CoderAgent {
     /// Write content to a file (creates parent directories if needed)
     pub fn write_file<P: AsRef<Path>>(path: P, content: &str) -> Result<()> {
         let path = path.as_ref();
-        
+
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create parent directories for: {:?}", path))?;
         }
 
-        fs::write(path, content)
-            .with_context(|| format!("Failed to write file: {:?}", path))
+        fs::write(path, content).with_context(|| format!("Failed to write file: {:?}", path))
     }
 
     /// Delete a file
@@ -305,9 +307,10 @@ mod tests {
 
     #[test]
     fn test_extract_single_code_block() {
-        let text = "Here's some code:\n```rust\nfn main() {\n    println!(\"Hello\");\n}\n```\nThat's it!";
+        let text =
+            "Here's some code:\n```rust\nfn main() {\n    println!(\"Hello\");\n}\n```\nThat's it!";
         let blocks = CoderAgent::extract_code_blocks(text).unwrap();
-        
+
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].language, "rust");
         assert!(blocks[0].code.contains("fn main()"));
@@ -318,7 +321,7 @@ mod tests {
     fn test_extract_code_block_with_path() {
         let text = "```rust:src/main.rs\nfn main() {\n    println!(\"Hello\");\n}\n```";
         let blocks = CoderAgent::extract_code_blocks(text).unwrap();
-        
+
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].language, "rust");
         assert_eq!(blocks[0].file_path, Some("src/main.rs".to_string()));
@@ -332,7 +335,7 @@ mod tests {
 Second file:\n\
 ```javascript\nconsole.log('world');\n```";
         let blocks = CoderAgent::extract_code_blocks(text).unwrap();
-        
+
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].language, "python");
         assert_eq!(blocks[1].language, "javascript");
@@ -351,7 +354,7 @@ Second file:\n\
     fn test_extract_code_block_with_spaces_in_path() {
         let text = "```typescript:src/my file.ts\nconst x = 1;\n```";
         let blocks = CoderAgent::extract_code_blocks(text).unwrap();
-        
+
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].language, "typescript");
         assert_eq!(blocks[0].file_path, Some("src/my file.ts".to_string()));
@@ -361,7 +364,7 @@ Second file:\n\
     fn test_extract_empty_code_block() {
         let text = "```rust\n```";
         let blocks = CoderAgent::extract_code_blocks(text).unwrap();
-        
+
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].code, "");
     }
@@ -422,43 +425,82 @@ Second file:\n\
 
     #[test]
     fn test_detect_language_rust() {
-        assert_eq!(CoderAgent::detect_language("main.rs"), Some("rust".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("main.rs"),
+            Some("rust".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_python() {
-        assert_eq!(CoderAgent::detect_language("script.py"), Some("python".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("script.py"),
+            Some("python".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_javascript() {
-        assert_eq!(CoderAgent::detect_language("app.js"), Some("javascript".to_string()));
-        assert_eq!(CoderAgent::detect_language("component.jsx"), Some("javascript".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("app.js"),
+            Some("javascript".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("component.jsx"),
+            Some("javascript".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_typescript() {
-        assert_eq!(CoderAgent::detect_language("app.ts"), Some("typescript".to_string()));
-        assert_eq!(CoderAgent::detect_language("component.tsx"), Some("typescript".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("app.ts"),
+            Some("typescript".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("component.tsx"),
+            Some("typescript".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_go() {
-        assert_eq!(CoderAgent::detect_language("main.go"), Some("go".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("main.go"),
+            Some("go".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_java() {
-        assert_eq!(CoderAgent::detect_language("Main.java"), Some("java".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("Main.java"),
+            Some("java".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_cpp() {
-        assert_eq!(CoderAgent::detect_language("main.cpp"), Some("cpp".to_string()));
-        assert_eq!(CoderAgent::detect_language("main.cc"), Some("cpp".to_string()));
-        assert_eq!(CoderAgent::detect_language("main.cxx"), Some("cpp".to_string()));
-        assert_eq!(CoderAgent::detect_language("header.h"), Some("cpp".to_string()));
-        assert_eq!(CoderAgent::detect_language("header.hpp"), Some("cpp".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("main.cpp"),
+            Some("cpp".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("main.cc"),
+            Some("cpp".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("main.cxx"),
+            Some("cpp".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("header.h"),
+            Some("cpp".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("header.hpp"),
+            Some("cpp".to_string())
+        );
     }
 
     #[test]
@@ -468,15 +510,30 @@ Second file:\n\
 
     #[test]
     fn test_detect_language_config_files() {
-        assert_eq!(CoderAgent::detect_language("config.yaml"), Some("yaml".to_string()));
-        assert_eq!(CoderAgent::detect_language("config.yml"), Some("yaml".to_string()));
-        assert_eq!(CoderAgent::detect_language("data.json"), Some("json".to_string()));
-        assert_eq!(CoderAgent::detect_language("Cargo.toml"), Some("toml".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("config.yaml"),
+            Some("yaml".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("config.yml"),
+            Some("yaml".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("data.json"),
+            Some("json".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("Cargo.toml"),
+            Some("toml".to_string())
+        );
     }
 
     #[test]
     fn test_detect_language_unknown() {
-        assert_eq!(CoderAgent::detect_language("file.xyz"), Some("text".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("file.xyz"),
+            Some("text".to_string())
+        );
     }
 
     #[test]
@@ -486,8 +543,14 @@ Second file:\n\
 
     #[test]
     fn test_detect_language_case_insensitive() {
-        assert_eq!(CoderAgent::detect_language("Main.RS"), Some("rust".to_string()));
-        assert_eq!(CoderAgent::detect_language("Script.PY"), Some("python".to_string()));
+        assert_eq!(
+            CoderAgent::detect_language("Main.RS"),
+            Some("rust".to_string())
+        );
+        assert_eq!(
+            CoderAgent::detect_language("Script.PY"),
+            Some("python".to_string())
+        );
     }
 
     // ==================== Code Change Application Tests ====================
@@ -582,11 +645,14 @@ Second file:\n\
     #[test]
     fn test_process_code_generation_task() {
         let task = Task::new("Generate a Rust function", TaskType::CodeGeneration);
-        let llm_response = "Here's the code:\n```rust\nfn hello() {\n    println!(\"Hello\");\n}\n```";
+        let llm_response =
+            "Here's the code:\n```rust\nfn hello() {\n    println!(\"Hello\");\n}\n```";
 
         let agent = CoderAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, llm_response, shared_memory).unwrap();
+        let result = agent
+            .process_task(&task, llm_response, shared_memory)
+            .unwrap();
         assert!(result.success);
         assert!(result.output.contains("fn hello()"));
         assert_eq!(result.error, None);
@@ -598,11 +664,14 @@ Second file:\n\
     #[test]
     fn test_process_code_generation_with_file_path() {
         let task = Task::new("Generate a main function", TaskType::CodeGeneration);
-        let llm_response = "```rust:src/main.rs\nfn main() {\n    println!(\"Hello, world!\");\n}\n```";
+        let llm_response =
+            "```rust:src/main.rs\nfn main() {\n    println!(\"Hello, world!\");\n}\n```";
 
         let agent = CoderAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, llm_response, shared_memory).unwrap();
+        let result = agent
+            .process_task(&task, llm_response, shared_memory)
+            .unwrap();
         assert!(result.success);
 
         let generated_files = result.metadata.get("generated_files").unwrap();
@@ -612,11 +681,14 @@ Second file:\n\
     #[test]
     fn test_process_code_edit_task() {
         let task = Task::new("Edit function", TaskType::CodeEdit);
-        let llm_response = "Updated:\n```python:app.py\ndef greet(name):\n    print(f\"Hello, {name}!\")\n```";
+        let llm_response =
+            "Updated:\n```python:app.py\ndef greet(name):\n    print(f\"Hello, {name}!\")\n```";
 
         let agent = CoderAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, llm_response, shared_memory).unwrap();
+        let result = agent
+            .process_task(&task, llm_response, shared_memory)
+            .unwrap();
         assert!(result.success);
 
         let edited_files = result.metadata.get("edited_files").unwrap();
@@ -630,7 +702,9 @@ Second file:\n\
 
         let agent = CoderAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, llm_response, shared_memory).unwrap();
+        let result = agent
+            .process_task(&task, llm_response, shared_memory)
+            .unwrap();
         assert!(result.success);
         assert_eq!(result.output, llm_response);
         assert!(result.metadata.is_empty());
@@ -645,7 +719,10 @@ Second file:\n\
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent.process_task(&task, llm_response, shared_memory);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unsupported task type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported task type"));
     }
 
     #[test]
@@ -658,14 +735,19 @@ Second file:\n\
 
         let agent = CoderAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, llm_response, shared_memory).unwrap();
+        let result = agent
+            .process_task(&task, llm_response, shared_memory)
+            .unwrap();
         assert!(result.success);
 
         let code_blocks_count = result.metadata.get("code_blocks").unwrap();
         assert_eq!(code_blocks_count, &serde_json::json!(2));
 
         let generated_files = result.metadata.get("generated_files").unwrap();
-        assert_eq!(generated_files, &serde_json::json!(vec!["src/lib.rs", "src/main.rs"]));
+        assert_eq!(
+            generated_files,
+            &serde_json::json!(vec!["src/lib.rs", "src/main.rs"])
+        );
     }
 
     // ==================== Integration Tests ====================

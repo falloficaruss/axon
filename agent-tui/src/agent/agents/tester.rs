@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
+use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
 /// Type of test
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,7 +95,12 @@ pub struct TestFile {
 pub struct TesterAgent;
 
 impl TaskProcessor for TesterAgent {
-    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
+    fn process_task(
+        &self,
+        task: &Task,
+        response: &str,
+        _shared_memory: Arc<SharedMemory>,
+    ) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -125,7 +130,7 @@ impl TesterAgent {
                 When providing test code, use markdown code blocks with file paths:\n\
                 ```rust:tests/test_module.rs\n\
                 // your test code here\n\
-                ```"
+                ```",
             )
     }
 
@@ -163,10 +168,7 @@ impl TesterAgent {
             }
         }
 
-        metadata.insert(
-            "test_files".to_string(),
-            serde_json::json!(generated_files),
-        );
+        metadata.insert("test_files".to_string(), serde_json::json!(generated_files));
         metadata.insert(
             "generated_files".to_string(),
             serde_json::json!(generated_files),
@@ -194,12 +196,23 @@ impl TesterAgent {
             "total_tests".to_string(),
             serde_json::json!(execution_result.total),
         );
-        metadata.insert("passed".to_string(), serde_json::json!(execution_result.passed));
-        metadata.insert("failed".to_string(), serde_json::json!(execution_result.failed));
-        metadata.insert("skipped".to_string(), serde_json::json!(execution_result.skipped));
+        metadata.insert(
+            "passed".to_string(),
+            serde_json::json!(execution_result.passed),
+        );
+        metadata.insert(
+            "failed".to_string(),
+            serde_json::json!(execution_result.failed),
+        );
+        metadata.insert(
+            "skipped".to_string(),
+            serde_json::json!(execution_result.skipped),
+        );
         metadata.insert(
             "success_rate".to_string(),
-            serde_json::json!((execution_result.passed as f32 / execution_result.total as f32 * 100.0).round()),
+            serde_json::json!(
+                (execution_result.passed as f32 / execution_result.total as f32 * 100.0).round()
+            ),
         );
 
         Ok(TaskResult {
@@ -220,14 +233,15 @@ impl TesterAgent {
         let re = Regex::new(r"```(\w+)(?::([^\n]+))?\n([\s\S]*?)```").unwrap();
 
         for cap in re.captures_iter(text) {
-            let language = cap.get(1)
+            let language = cap
+                .get(1)
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_else(|| "text".to_string());
 
-            let file_path = cap.get(2)
-                .map(|m| m.as_str().trim().to_string());
+            let file_path = cap.get(2).map(|m| m.as_str().trim().to_string());
 
-            let code = cap.get(3)
+            let code = cap
+                .get(3)
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
 
@@ -249,7 +263,7 @@ impl TesterAgent {
     /// Check if a file appears to be a test file
     fn is_test_file(path: &str, language: &str, content: &str) -> bool {
         let path_lower = path.to_lowercase();
-        
+
         // Check filename patterns
         let test_patterns = ["test", "spec", "_test", "_spec"];
         let is_test_named = test_patterns.iter().any(|p| path_lower.contains(p));
@@ -265,7 +279,9 @@ impl TesterAgent {
         };
 
         let content_lower = content.to_lowercase();
-        let has_test_content = test_indicators.iter().any(|i: &&str| content_lower.contains(i.to_lowercase().as_str()));
+        let has_test_content = test_indicators
+            .iter()
+            .any(|i: &&str| content_lower.contains(i.to_lowercase().as_str()));
 
         is_test_named || has_test_content
     }
@@ -281,12 +297,22 @@ impl TesterAgent {
         // Try to parse common test output formats
 
         // Rust cargo test format: "test result: ok. 5 passed; 0 failed; 0 ignored"
-        let rust_re = Regex::new(r"test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored").unwrap();
+        let rust_re =
+            Regex::new(r"test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored").unwrap();
         if let Some(cap) = rust_re.captures(output) {
             let _success = cap.get(1).map(|m| m.as_str()) == Some("ok");
-            passed = cap.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            failed = cap.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            skipped = cap.get(4).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            passed = cap
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            failed = cap
+                .get(3)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            skipped = cap
+                .get(4)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
             total = passed + failed + skipped;
 
             return Ok(TestExecutionResult {
@@ -304,13 +330,20 @@ impl TesterAgent {
         // Python pytest format: "=== 5 passed, 1 failed in 0.12s ==="
         let pytest_re = Regex::new(r"=== (\d+) passed, (\d+) failed").unwrap();
         if let Some(cap) = pytest_re.captures(output) {
-            passed = cap.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            failed = cap.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            passed = cap
+                .get(1)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            failed = cap
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
             total = passed + failed;
 
             // Extract duration if present
             let duration_re = Regex::new(r"in ([\d.]+)s").unwrap();
-            let duration_ms = duration_re.captures(output)
+            let duration_ms = duration_re
+                .captures(output)
                 .and_then(|cap| cap.get(1))
                 .and_then(|m| m.as_str().parse::<f64>().ok())
                 .map(|d| (d * 1000.0) as u64);
@@ -336,7 +369,10 @@ impl TesterAgent {
             if let Some(cap) = pass_re.captures(line) {
                 passed += 1;
                 test_results.push(TestCaseResult {
-                    name: cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                    name: cap
+                        .get(1)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
                     passed: true,
                     duration_ms: None,
                     error: None,
@@ -345,7 +381,10 @@ impl TesterAgent {
             } else if let Some(cap) = fail_re.captures(line) {
                 failed += 1;
                 test_results.push(TestCaseResult {
-                    name: cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                    name: cap
+                        .get(1)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
                     passed: false,
                     duration_ms: None,
                     error: Some(line.to_string()),
@@ -354,7 +393,10 @@ impl TesterAgent {
             } else if let Some(cap) = skip_re.captures(line) {
                 skipped += 1;
                 test_results.push(TestCaseResult {
-                    name: cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                    name: cap
+                        .get(1)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
                     passed: false,
                     duration_ms: None,
                     error: None,
@@ -386,8 +428,9 @@ impl TesterAgent {
         for test_file in test_files {
             // Create parent directories if needed
             if let Some(parent) = test_file.file_path.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create directories for {:?}", test_file.file_path))?;
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create directories for {:?}", test_file.file_path)
+                })?;
             }
 
             fs::write(&test_file.file_path, &test_file.content)
@@ -400,7 +443,10 @@ impl TesterAgent {
     }
 
     /// Run tests using the appropriate command for the project type
-    pub fn run_tests(project_root: &Path, test_command: Option<&str>) -> Result<TestExecutionResult> {
+    pub fn run_tests(
+        project_root: &Path,
+        test_command: Option<&str>,
+    ) -> Result<TestExecutionResult> {
         let (cmd, args) = if let Some(custom) = test_command {
             // Parse custom command
             let mut parts = custom.split_whitespace();
@@ -413,12 +459,16 @@ impl TesterAgent {
                 ("cargo", vec!["test"])
             } else if project_root.join("package.json").exists() {
                 ("npm", vec!["test"])
-            } else if project_root.join("pytest.ini").exists() || project_root.join("setup.py").exists() {
+            } else if project_root.join("pytest.ini").exists()
+                || project_root.join("setup.py").exists()
+            {
                 ("pytest", vec![])
             } else if project_root.join("go.mod").exists() {
                 ("go", vec!["test", "./..."])
             } else {
-                return Err(anyhow!("Could not detect project type. Specify a test command."));
+                return Err(anyhow!(
+                    "Could not detect project type. Specify a test command."
+                ));
             }
         };
 
@@ -463,7 +513,7 @@ mod tests {
 ```"#;
 
         let files = TesterAgent::extract_test_files(text).unwrap();
-        
+
         assert_eq!(files.len(), 1);
         assert!(files[0].file_path.ends_with("test_calculator.rs"));
         assert!(files[0].content.contains("#[test]"));
@@ -480,16 +530,28 @@ def test_subtract():
 ```"#;
 
         let files = TesterAgent::extract_test_files(text).unwrap();
-        
+
         assert_eq!(files.len(), 1);
         assert!(files[0].content.contains("def test_"));
     }
 
     #[test]
     fn test_is_test_file() {
-        assert!(TesterAgent::is_test_file("test_module.rs", "rust", "#[test]"));
-        assert!(TesterAgent::is_test_file("module_test.py", "python", "def test_"));
-        assert!(TesterAgent::is_test_file("spec.js", "javascript", "describe("));
+        assert!(TesterAgent::is_test_file(
+            "test_module.rs",
+            "rust",
+            "#[test]"
+        ));
+        assert!(TesterAgent::is_test_file(
+            "module_test.py",
+            "python",
+            "def test_"
+        ));
+        assert!(TesterAgent::is_test_file(
+            "spec.js",
+            "javascript",
+            "describe("
+        ));
         assert!(!TesterAgent::is_test_file("main.rs", "rust", "fn main()"));
     }
 
@@ -503,7 +565,7 @@ test tests::test_multiply ... ok
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured"#;
 
         let result = TesterAgent::parse_test_output(output).unwrap();
-        
+
         assert_eq!(result.total, 5);
         assert_eq!(result.passed, 5);
         assert_eq!(result.failed, 0);
@@ -514,7 +576,7 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured"#;
         let output = "===================== 10 passed, 2 failed in 1.23s =====================";
 
         let result = TesterAgent::parse_test_output(output).unwrap();
-        
+
         assert_eq!(result.total, 12);
         assert_eq!(result.passed, 10);
         assert_eq!(result.failed, 2);
@@ -529,7 +591,7 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured"#;
 ○ test_divide - skipped"#;
 
         let result = TesterAgent::parse_test_output(output).unwrap();
-        
+
         assert_eq!(result.passed, 2);
         assert_eq!(result.failed, 1);
         assert_eq!(result.skipped, 1);
@@ -550,7 +612,10 @@ fn test_function() {
         let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
-        assert_eq!(result.metadata.get("test_count").unwrap(), &serde_json::json!(1));
+        assert_eq!(
+            result.metadata.get("test_count").unwrap(),
+            &serde_json::json!(1)
+        );
     }
 
     #[test]
@@ -563,7 +628,10 @@ fn test_function() {
         let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
-        assert_eq!(result.metadata.get("passed").unwrap(), &serde_json::json!(10));
+        assert_eq!(
+            result.metadata.get("passed").unwrap(),
+            &serde_json::json!(10)
+        );
     }
 
     #[test]
@@ -576,7 +644,10 @@ fn test_function() {
         let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(!result.success);
-        assert_eq!(result.metadata.get("failed").unwrap(), &serde_json::json!(2));
+        assert_eq!(
+            result.metadata.get("failed").unwrap(),
+            &serde_json::json!(2)
+        );
         assert!(result.error.is_some());
     }
 
@@ -601,7 +672,7 @@ fn test_function() {
         };
 
         let applied = TesterAgent::apply_test_files(&[test_file]).unwrap();
-        
+
         assert_eq!(applied.len(), 1);
         assert!(temp_dir.path().join("tests/test_module.rs").exists());
     }

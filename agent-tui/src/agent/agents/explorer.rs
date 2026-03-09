@@ -12,9 +12,9 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
+use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
 /// Information about a file in the codebase
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,7 +82,12 @@ pub struct CodebaseSummary {
 pub struct ExplorerAgent;
 
 impl TaskProcessor for ExplorerAgent {
-    fn process_task(&self, task: &Task, response: &str, _shared_memory: Arc<SharedMemory>) -> Result<TaskResult> {
+    fn process_task(
+        &self,
+        task: &Task,
+        response: &str,
+        _shared_memory: Arc<SharedMemory>,
+    ) -> Result<TaskResult> {
         Self::process_task_internal(task, response)
     }
 }
@@ -119,7 +124,7 @@ impl ExplorerAgent {
                 ## Dependencies\n\
                 [External and internal dependencies]\n\n\
                 ## Entry Points\n\
-                [Main functions, CLI handlers, etc.]"
+                [Main functions, CLI handlers, etc.]",
             )
     }
 
@@ -208,8 +213,15 @@ impl ExplorerAgent {
 
         // Extract entry points from common patterns
         let entry_patterns = [
-            "src/main.rs", "main.py", "index.js", "app.js", "main.go",
-            "src/main.java", "Program.cs", "main.rb", "manage.py",
+            "src/main.rs",
+            "main.py",
+            "index.js",
+            "app.js",
+            "main.go",
+            "src/main.java",
+            "Program.cs",
+            "main.rb",
+            "manage.py",
         ];
         for pattern in &entry_patterns {
             if response.contains(pattern) {
@@ -258,9 +270,16 @@ impl ExplorerAgent {
 
             // Skip hidden files and common non-source directories
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') || name == "node_modules" || name == "target" 
-                    || name == "build" || name == "dist" || name == "__pycache__"
-                    || name == ".git" || name == "vendor" || name == "deps" {
+                if name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "target"
+                    || name == "build"
+                    || name == "dist"
+                    || name == "__pycache__"
+                    || name == ".git"
+                    || name == "vendor"
+                    || name == "deps"
+                {
                     continue;
                 }
             }
@@ -288,7 +307,7 @@ impl ExplorerAgent {
         }
 
         let language = Self::detect_language(path);
-        
+
         // Skip files without recognized language
         if language.is_none() {
             return Ok(None);
@@ -299,7 +318,8 @@ impl ExplorerAgent {
         let function_count = Self::count_functions(&content, language.as_deref());
         let import_count = Self::count_imports(&content, language.as_deref());
 
-        let relative_path = path.strip_prefix(base_path)
+        let relative_path = path
+            .strip_prefix(base_path)
             .unwrap_or(path)
             .to_string_lossy()
             .to_string();
@@ -319,71 +339,69 @@ impl ExplorerAgent {
         path.extension()
             .and_then(|ext| ext.to_str())
             .and_then(|ext| {
-                Some(match ext.to_lowercase().as_str() {
-                    "rs" => "rust",
-                    "py" => "python",
-                    "js" => "javascript",
-                    "ts" => "typescript",
-                    "jsx" => "javascript",
-                    "tsx" => "typescript",
-                    "java" => "java",
-                    "cpp" | "cc" | "cxx" => "cpp",
-                    "c" | "h" => "c",
-                    "hpp" | "hxx" => "cpp",
-                    "go" => "go",
-                    "rb" => "ruby",
-                    "php" => "php",
-                    "cs" => "csharp",
-                    "swift" => "swift",
-                    "kt" => "kotlin",
-                    "scala" => "scala",
-                    "sh" | "bash" => "bash",
-                    "yaml" | "yml" => "yaml",
-                    "json" => "json",
-                    "toml" => "toml",
-                    "xml" => "xml",
-                    "html" => "html",
-                    "css" | "scss" | "sass" | "less" => "css",
-                    "md" => "markdown",
-                    "sql" => "sql",
-                    "graphql" => "graphql",
-                    "proto" => "protobuf",
-                    "dockerfile" => "dockerfile",
-                    "ex" | "exs" => "elixir",
-                    "erl" => "erlang",
-                    "hs" => "haskell",
-                    "clj" | "cljs" => "clojure",
-                    "lua" => "lua",
-                    "r" | "R" => "r",
-                    "m" | "mm" => "objectivec",
-                    "fs" | "fsx" => "fsharp",
-                    "vue" => "vue",
-                    "svelte" => "svelte",
-                    _ => return None,
-                }.to_string())
+                Some(
+                    match ext.to_lowercase().as_str() {
+                        "rs" => "rust",
+                        "py" => "python",
+                        "js" => "javascript",
+                        "ts" => "typescript",
+                        "jsx" => "javascript",
+                        "tsx" => "typescript",
+                        "java" => "java",
+                        "cpp" | "cc" | "cxx" => "cpp",
+                        "c" | "h" => "c",
+                        "hpp" | "hxx" => "cpp",
+                        "go" => "go",
+                        "rb" => "ruby",
+                        "php" => "php",
+                        "cs" => "csharp",
+                        "swift" => "swift",
+                        "kt" => "kotlin",
+                        "scala" => "scala",
+                        "sh" | "bash" => "bash",
+                        "yaml" | "yml" => "yaml",
+                        "json" => "json",
+                        "toml" => "toml",
+                        "xml" => "xml",
+                        "html" => "html",
+                        "css" | "scss" | "sass" | "less" => "css",
+                        "md" => "markdown",
+                        "sql" => "sql",
+                        "graphql" => "graphql",
+                        "proto" => "protobuf",
+                        "dockerfile" => "dockerfile",
+                        "ex" | "exs" => "elixir",
+                        "erl" => "erlang",
+                        "hs" => "haskell",
+                        "clj" | "cljs" => "clojure",
+                        "lua" => "lua",
+                        "r" | "R" => "r",
+                        "m" | "mm" => "objectivec",
+                        "fs" | "fsx" => "fsharp",
+                        "vue" => "vue",
+                        "svelte" => "svelte",
+                        _ => return None,
+                    }
+                    .to_string(),
+                )
             })
     }
 
     /// Count functions in code
     fn count_functions(content: &str, language: Option<&str>) -> usize {
         match language {
-            Some("rust") => {
-                content.matches("fn ").count()
-            }
-            Some("python") => {
-                content.matches("def ").count()
-            }
+            Some("rust") => content.matches("fn ").count(),
+            Some("python") => content.matches("def ").count(),
             Some("javascript") | Some("typescript") => {
-                let func_re = Regex::new(r"(?:function\s+\w+|\w+\s*[=:]\s*(?:async\s+)?\(|=>)").unwrap();
+                let func_re =
+                    Regex::new(r"(?:function\s+\w+|\w+\s*[=:]\s*(?:async\s+)?\(|=>)").unwrap();
                 func_re.find_iter(content).count()
             }
             Some("java") | Some("cpp") | Some("c") | Some("csharp") => {
                 // Rough heuristic: count method-like patterns
                 content.matches('(').count() / 3
             }
-            Some("go") => {
-                content.matches("func ").count()
-            }
+            Some("go") => content.matches("func ").count(),
             _ => {
                 // Generic: count function-like patterns
                 let func_re = Regex::new(r"\bfn\b|\bfunction\b|\bdef\b|\bfunc\b").unwrap();
@@ -395,21 +413,13 @@ impl ExplorerAgent {
     /// Count imports/dependencies in code
     fn count_imports(content: &str, language: Option<&str>) -> usize {
         match language {
-            Some("rust") => {
-                content.matches("use ").count()
-            }
-            Some("python") => {
-                content.matches("import ").count() + content.matches("from ").count()
-            }
+            Some("rust") => content.matches("use ").count(),
+            Some("python") => content.matches("import ").count() + content.matches("from ").count(),
             Some("javascript") | Some("typescript") => {
                 content.matches("import ").count() + content.matches("require(").count()
             }
-            Some("java") => {
-                content.matches("import ").count()
-            }
-            Some("go") => {
-                content.matches("import ").count()
-            }
+            Some("java") => content.matches("import ").count(),
+            Some("go") => content.matches("import ").count(),
             _ => {
                 let import_re = Regex::new(r"\bimport\b|\brequire\b|\buse\b").unwrap();
                 import_re.find_iter(content).count()
@@ -424,8 +434,8 @@ impl ExplorerAgent {
         file_pattern: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
         let mut results = Vec::new();
-        let regex = Regex::new(pattern)
-            .with_context(|| format!("Invalid search pattern: {}", pattern))?;
+        let regex =
+            Regex::new(pattern).with_context(|| format!("Invalid search pattern: {}", pattern))?;
 
         let file_regex = file_pattern
             .map(|p| Regex::new(p).context("Invalid file pattern"))
@@ -449,9 +459,15 @@ impl ExplorerAgent {
 
             // Skip hidden files and common non-source directories
             if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') || name == "node_modules" || name == "target"
-                    || name == "build" || name == "dist" || name == "__pycache__"
-                    || name == ".git" || name == "vendor" {
+                if name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "target"
+                    || name == "build"
+                    || name == "dist"
+                    || name == "__pycache__"
+                    || name == ".git"
+                    || name == "vendor"
+                {
                     continue;
                 }
             }
@@ -564,7 +580,8 @@ impl ExplorerAgent {
             }
             _ => {
                 // Generic symbol detection
-                let symbol_re = Regex::new(r"^(?:function|class|def|fn|const|let|var)\s+(\w+)").unwrap();
+                let symbol_re =
+                    Regex::new(r"^(?:function|class|def|fn|const|let|var)\s+(\w+)").unwrap();
                 for (line_num, line) in content.lines().enumerate() {
                     if let Some(cap) = symbol_re.captures(line) {
                         symbols.push(Symbol {
@@ -603,10 +620,20 @@ impl ExplorerAgent {
         }
 
         // Find entry points
-        let entry_patterns = ["main.rs", "main.py", "index.js", "app.js", "main.go", "main.java"];
+        let entry_patterns = [
+            "main.rs",
+            "main.py",
+            "index.js",
+            "app.js",
+            "main.go",
+            "main.java",
+        ];
         for file in &files {
             if let Some(name) = Path::new(&file.path).file_name() {
-                if entry_patterns.iter().any(|p| p == &name.to_string_lossy().as_ref()) {
+                if entry_patterns
+                    .iter()
+                    .any(|p| p == &name.to_string_lossy().as_ref())
+                {
                     summary.entry_points.push(file.path.clone());
                 }
             }
@@ -638,10 +665,22 @@ mod tests {
 
     #[test]
     fn test_detect_language() {
-        assert_eq!(ExplorerAgent::detect_language(Path::new("test.rs")), Some("rust".to_string()));
-        assert_eq!(ExplorerAgent::detect_language(Path::new("test.py")), Some("python".to_string()));
-        assert_eq!(ExplorerAgent::detect_language(Path::new("test.js")), Some("javascript".to_string()));
-        assert_eq!(ExplorerAgent::detect_language(Path::new("test.unknown")), None);
+        assert_eq!(
+            ExplorerAgent::detect_language(Path::new("test.rs")),
+            Some("rust".to_string())
+        );
+        assert_eq!(
+            ExplorerAgent::detect_language(Path::new("test.py")),
+            Some("python".to_string())
+        );
+        assert_eq!(
+            ExplorerAgent::detect_language(Path::new("test.js")),
+            Some("javascript".to_string())
+        );
+        assert_eq!(
+            ExplorerAgent::detect_language(Path::new("test.unknown")),
+            None
+        );
     }
 
     #[test]
@@ -700,11 +739,17 @@ pub enum MyEnum { A, B }
         fs::write(&file_path, content).unwrap();
 
         let symbols = ExplorerAgent::find_symbols(&file_path).unwrap();
-        
+
         assert_eq!(symbols.len(), 4);
-        assert!(symbols.iter().any(|s| s.name == "main" && s.symbol_type == "function"));
-        assert!(symbols.iter().any(|s| s.name == "MyStruct" && s.symbol_type == "struct"));
-        assert!(symbols.iter().any(|s| s.name == "MyEnum" && s.symbol_type == "enum"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "main" && s.symbol_type == "function"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "MyStruct" && s.symbol_type == "struct"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "MyEnum" && s.symbol_type == "enum"));
     }
 
     #[test]
@@ -721,16 +766,20 @@ def my_function():
         fs::write(&file_path, content).unwrap();
 
         let symbols = ExplorerAgent::find_symbols(&file_path).unwrap();
-        
+
         assert_eq!(symbols.len(), 2);
-        assert!(symbols.iter().any(|s| s.name == "MyClass" && s.symbol_type == "class"));
-        assert!(symbols.iter().any(|s| s.name == "my_function" && s.symbol_type == "function"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "MyClass" && s.symbol_type == "class"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "my_function" && s.symbol_type == "function"));
     }
 
     #[test]
     fn test_scan_directory() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Create some test files
         fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
         fs::write(temp_dir.path().join("lib.rs"), "pub fn lib_fn() {}").unwrap();
@@ -738,7 +787,7 @@ def my_function():
         fs::write(temp_dir.path().join("src/module.rs"), "pub fn mod_fn() {}").unwrap();
 
         let files = ExplorerAgent::scan_directory(temp_dir.path(), None).unwrap();
-        
+
         assert_eq!(files.len(), 3);
         assert!(files.iter().any(|f| f.path.contains("main.rs")));
         assert!(files.iter().any(|f| f.path.contains("lib.rs")));
@@ -748,12 +797,12 @@ def my_function():
     #[test]
     fn test_search_codebase() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         fs::write(temp_dir.path().join("file1.rs"), "fn hello() {}").unwrap();
         fs::write(temp_dir.path().join("file2.rs"), "fn goodbye() {}").unwrap();
 
         let results = ExplorerAgent::search_codebase(temp_dir.path(), "fn hello", None).unwrap();
-        
+
         assert_eq!(results.len(), 1);
         assert!(results[0].line_content.contains("fn hello"));
     }
@@ -777,8 +826,14 @@ Found 50 files with 2500 lines of code.
         let result = agent.process_task(&task, response, shared_memory).unwrap();
 
         assert!(result.success);
-        assert_eq!(result.metadata.get("total_files").unwrap(), &serde_json::json!(50));
-        assert_eq!(result.metadata.get("total_lines").unwrap(), &serde_json::json!(2500));
+        assert_eq!(
+            result.metadata.get("total_files").unwrap(),
+            &serde_json::json!(50)
+        );
+        assert_eq!(
+            result.metadata.get("total_lines").unwrap(),
+            &serde_json::json!(2500)
+        );
     }
 
     #[test]
