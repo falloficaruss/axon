@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::{
     layout::{Margin, Rect},
     style::{Color, Modifier, Style},
@@ -8,8 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::types::{Message, MessageRole, Session};
 use crate::tui::markdown;
+use crate::types::{Message, MessageRole, Session};
 
 /// Chat component for displaying messages
 pub struct Chat {
@@ -95,10 +93,7 @@ impl Chat {
                         .add_modifier(Modifier::BOLD),
                 ),
                 MessageRole::Agent => {
-                    let agent_name = message
-                        .agent_id
-                        .as_deref()
-                        .unwrap_or("Agent");
+                    let agent_name = message.agent_id.as_deref().unwrap_or("Agent");
                     (
                         agent_name,
                         Style::default()
@@ -129,12 +124,19 @@ impl Chat {
             let content_lines = markdown::parse_markdown(&message.content);
             for line in content_lines {
                 // Indent content by modifying spans
-                let indented_spans: Vec<Span> = line.spans.into_iter().map(|mut span| {
-                    if !span.content.starts_with('│') && !span.content.starts_with('┌') && !span.content.starts_with('└') {
-                        span.content = format!("  {}", span.content).into();
-                    }
-                    span
-                }).collect();
+                let indented_spans: Vec<Span> = line
+                    .spans
+                    .into_iter()
+                    .map(|mut span| {
+                        if !span.content.starts_with('│')
+                            && !span.content.starts_with('┌')
+                            && !span.content.starts_with('└')
+                        {
+                            span.content = format!("  {}", span.content).into();
+                        }
+                        span
+                    })
+                    .collect();
                 all_lines.push(Line::from(indented_spans));
             }
 
@@ -153,7 +155,7 @@ impl Chat {
         }
 
         let content_height = all_lines.len();
-        
+
         let paragraph = Paragraph::new(Text::from(all_lines))
             .block(block)
             .wrap(Wrap { trim: true })

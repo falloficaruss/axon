@@ -2,8 +2,6 @@
 //!
 //! This module provides the PlannerAgent implementation for task decomposition and planning.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -181,10 +179,7 @@ impl PlannerAgent {
         metadata.insert("total_effort".to_string(), serde_json::json!(total_effort));
 
         // Add plan metadata for tests
-        metadata.insert(
-            "plan".to_string(),
-            serde_json::json!(llm_response),
-        );
+        metadata.insert("plan".to_string(), serde_json::json!(llm_response));
         metadata.insert(
             "has_structured_plan".to_string(),
             serde_json::json!(!planning_result.subtasks.is_empty()),

@@ -2,8 +2,6 @@
 //!
 //! This module provides the ExplorerAgent implementation for codebase exploration and analysis.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -446,11 +444,14 @@ impl ExplorerAgent {
             Some("rust") => content.matches("use ").count(),
             Some("python") => {
                 // Count import statements (lines starting with 'import ' or 'from ')
-                content.lines().filter(|line| {
-                    let trimmed = line.trim();
-                    trimmed.starts_with("import ") || trimmed.starts_with("from ")
-                }).count()
-            },
+                content
+                    .lines()
+                    .filter(|line| {
+                        let trimmed = line.trim();
+                        trimmed.starts_with("import ") || trimmed.starts_with("from ")
+                    })
+                    .count()
+            }
             Some("javascript") | Some("typescript") => {
                 content.matches("import ").count() + content.matches("require(").count()
             }

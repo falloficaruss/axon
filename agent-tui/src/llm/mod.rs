@@ -2,8 +2,6 @@
 //!
 //! This module handles communication with LLM providers (currently OpenAI).
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use async_openai::{
     config::OpenAIConfig,
@@ -24,12 +22,24 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(test, feature = "mock-llm"))]
 use tokio::sync::RwLock;
 
+pub trait LlmProvider: Send + Sync + 'static {
+    /// Send a message and get a response
+    async fn send_message(&self, messages: &[Message]) -> Result<String>;
+
+    /// Send a streaming message
+    async fn send_message_streaming(
+        &self,
+        messages: &[Message],
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>>;
+}
+
 /// LLM client for making API calls
 pub struct LlmClient {
     client: Client<OpenAIConfig>,
     model: String,
     max_tokens: u32,
     temperature: f32,
+    retry_max: u32,
 }
 
 impl LlmClient {
@@ -43,6 +53,7 @@ impl LlmClient {
             model: model.to_string(),
             max_tokens,
             temperature,
+            retry_max: 3,
         }
     }
 
@@ -55,64 +66,8 @@ impl LlmClient {
             model: model.to_string(),
             max_tokens,
             temperature,
+            retry_max: 3,
         }
-    }
-
-    /// Send a message and get a response
-    pub async fn send_message(&self, messages: &[Message]) -> Result<String> {
-        let request_messages = Self::convert_messages(messages);
-
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(request_messages)
-            .max_tokens(self.max_tokens)
-            .temperature(self.temperature)
-            .build()?;
-
-        let response = self.client.chat().create(request).await?;
-
-        // Extract the content from the first choice
-        let content = response
-            .choices
-            .first()
-            .and_then(|choice| choice.message.content.clone())
-            .ok_or_else(|| anyhow!("No response from LLM"))?;
-
-        Ok(content)
-    }
-
-    /// Send a streaming message
-    pub async fn send_message_streaming(
-        &self,
-        messages: &[Message],
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
-        let request_messages = Self::convert_messages(messages);
-
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(request_messages)
-            .max_tokens(self.max_tokens)
-            .temperature(self.temperature)
-            .stream(true)
-            .build()?;
-
-        let stream = self.client.chat().create_stream(request).await?;
-
-        // Transform the stream to extract content strings
-        let content_stream = stream.filter_map(|chunk| async move {
-            match chunk {
-                Ok(chunk) => {
-                    let content = chunk
-                        .choices
-                        .first()
-                        .and_then(|choice| choice.delta.content.clone());
-                    content.map(Ok)
-                }
-                Err(e) => Some(Err(anyhow!("Stream error: {}", e))),
-            }
-        });
-
-        Ok(Box::pin(content_stream))
     }
 
     /// Convert our internal Message types to OpenAI's message types
@@ -154,6 +109,83 @@ impl LlmClient {
                 }
             })
             .collect()
+    }
+}
+
+impl LlmProvider for LlmClient {
+    /// Send a message and get a response
+    async fn send_message(&self, messages: &[Message]) -> Result<String> {
+        let request_messages = Self::convert_messages(messages);
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(&self.model)
+            .messages(request_messages)
+            .max_tokens(self.max_tokens)
+            .temperature(self.temperature)
+            .build()?;
+
+        let mut backoff = 1;
+        let mut last_error = None;
+
+        for attempt in 0..=self.retry_max {
+            if attempt > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(backoff)).await;
+                backoff *= 2;
+                tracing::warn!("Retrying LLM call (attempt {})", attempt);
+            }
+
+            match self.client.chat().create(request.clone()).await {
+                Ok(response) => {
+                    // Extract the content from the first choice
+                    let content = response
+                        .choices
+                        .first()
+                        .and_then(|choice| choice.message.content.clone())
+                        .ok_or_else(|| anyhow!("No response from LLM"))?;
+
+                    return Ok(content);
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(anyhow!("LLM call failed after {} retries: {:?}", self.retry_max, last_error))
+    }
+
+    /// Send a streaming message
+    async fn send_message_streaming(
+        &self,
+        messages: &[Message],
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+        let request_messages = Self::convert_messages(messages);
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(&self.model)
+            .messages(request_messages)
+            .max_tokens(self.max_tokens)
+            .temperature(self.temperature)
+            .stream(true)
+            .build()?;
+
+        let stream = self.client.chat().create_stream(request).await?;
+
+        // Transform the stream to extract content strings
+        let content_stream = stream.filter_map(|chunk| async move {
+            match chunk {
+                Ok(chunk) => {
+                    let content = chunk
+                        .choices
+                        .first()
+                        .and_then(|choice| choice.delta.content.clone());
+                    content.map(Ok)
+                }
+                Err(e) => Some(Err(anyhow!("Stream error: {}", e))),
+            }
+        });
+
+        Ok(Box::pin(content_stream))
     }
 }
 
@@ -245,9 +277,12 @@ impl MockLlmClient {
         };
         self.call_history.lock().unwrap().push(call);
     }
+}
 
+#[cfg(any(test, feature = "mock-llm"))]
+impl LlmProvider for MockLlmClient {
     /// Send a message and get a response (mock implementation)
-    pub async fn send_message(&self, messages: &[Message]) -> Result<String> {
+    async fn send_message(&self, messages: &[Message]) -> Result<String> {
         self.record_call(messages, false);
 
         // Simulate latency
@@ -262,7 +297,7 @@ impl MockLlmClient {
     }
 
     /// Send a streaming message (mock implementation)
-    pub async fn send_message_streaming(
+    async fn send_message_streaming(
         &self,
         messages: &[Message],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {

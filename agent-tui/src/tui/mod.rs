@@ -435,6 +435,27 @@ impl App {
                         info!("Manual memory refresh");
                     }
                 }
+                KeyCode::Enter => {
+                    if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
+                        match self.memory_store.get(key, "session").await {
+                            Ok(Some(value)) => {
+                                let msg = Message::system(&format!("Memory [{}]: {}", key, value));
+                                self.session.add_message(msg.clone());
+                                self.chat.add_message(msg);
+                            }
+                            Ok(None) => {
+                                let msg = Message::system(&format!("Key '{}' not found in memory.", key));
+                                self.session.add_message(msg.clone());
+                                self.chat.add_message(msg);
+                            }
+                            Err(e) => {
+                                let msg = Message::system(&format!("Failed to recall memory: {}", e));
+                                self.session.add_message(msg.clone());
+                                self.chat.add_message(msg);
+                            }
+                        }
+                    }
+                }
                 _ => {}
             },
             AppMode::Sidebar => match key.code {
@@ -1218,11 +1239,7 @@ impl App {
 
             // Show value of selected key
             if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
-                // We need to fetch the value synchronously or have it pre-cached
-                // For now, let's just say "Press Enter to view" or try to show it if we can
-                // Since this is a draw call, we can't await. 
-                // In a real app we'd have the values cached or use a reactive state.
-                let value_text = "Value view not yet implemented (needs async fetch)";
+                let value_text = "Press Enter to view value";
                 let paragraph = Paragraph::new(value_text)
                     .block(Block::default().title(format!(" Value: {} ", key)).borders(Borders::ALL))
                     .wrap(Wrap { trim: true });

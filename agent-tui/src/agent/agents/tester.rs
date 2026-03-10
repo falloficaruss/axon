@@ -2,8 +2,6 @@
 //!
 //! This module provides the TesterAgent implementation for test generation and execution.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -174,14 +172,8 @@ impl TesterAgent {
             "test_count".to_string(),
             serde_json::json!(test_files.len()),
         );
-        metadata.insert(
-            "passed_count".to_string(),
-            serde_json::json!(passed_count),
-        );
-        metadata.insert(
-            "failed_count".to_string(),
-            serde_json::json!(failed_count),
-        );
+        metadata.insert("passed_count".to_string(), serde_json::json!(passed_count));
+        metadata.insert("failed_count".to_string(), serde_json::json!(failed_count));
         metadata.insert(
             "generated_tests_count".to_string(),
             serde_json::json!(test_files.len()),
@@ -212,7 +204,7 @@ impl TesterAgent {
 
         // Extract test files for generated_tests_count
         let test_files = Self::extract_test_files(llm_response).unwrap_or_default();
-        
+
         // Count code blocks as generated tests (fallback if no test files extracted)
         let code_block_re = Regex::new(r"```\w*\n").unwrap();
         let code_block_count = code_block_re.find_iter(llm_response).count();
@@ -246,14 +238,8 @@ impl TesterAgent {
             ),
         );
         // Add additional metadata keys expected by tests
-        metadata.insert(
-            "passed_count".to_string(),
-            serde_json::json!(passed_count),
-        );
-        metadata.insert(
-            "failed_count".to_string(),
-            serde_json::json!(failed_count),
-        );
+        metadata.insert("passed_count".to_string(), serde_json::json!(passed_count));
+        metadata.insert("failed_count".to_string(), serde_json::json!(failed_count));
         metadata.insert(
             "generated_tests_count".to_string(),
             serde_json::json!(generated_tests_count),
@@ -263,7 +249,10 @@ impl TesterAgent {
             success: execution_result.failed == 0 && failed_count == 0,
             output: llm_response.to_string(),
             error: if execution_result.failed > 0 || failed_count > 0 {
-                Some(format!("{} tests failed", execution_result.failed + failed_count))
+                Some(format!(
+                    "{} tests failed",
+                    execution_result.failed + failed_count
+                ))
             } else {
                 None
             },

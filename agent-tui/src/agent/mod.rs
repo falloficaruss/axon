@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 /// Trait for specialized agent task processing
 pub trait TaskProcessor: Send + Sync {
-    fn process_task(&self, task: &Task, response: &str, shared_memory: Arc<SharedMemory>) -> Result<TaskResult>;
+    async fn process_task(&self, task: &Task, response: &str, shared_memory: Arc<SharedMemory>) -> Result<TaskResult>;
 }
 
 /// Registry of available agents

@@ -4,26 +4,25 @@
 
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Shared memory with hierarchical namespaces
 pub struct SharedMemory {
     /// Global scope (shared across all sessions)
-    global: Arc<RwLock<HashMap<String, Value>>>,
+    global: RwLock<HashMap<String, Value>>,
     /// Session scope (shared within a session)
-    sessions: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
+    sessions: RwLock<HashMap<String, HashMap<String, Value>>>,
     /// Agent scope (per-agent memory)
-    agents: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
+    agents: RwLock<HashMap<String, HashMap<String, Value>>>,
 }
 
 impl SharedMemory {
     /// Create a new shared memory instance
     pub fn new() -> Self {
         Self {
-            global: Arc::new(RwLock::new(HashMap::new())),
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            agents: Arc::new(RwLock::new(HashMap::new())),
+            global: RwLock::new(HashMap::new()),
+            sessions: RwLock::new(HashMap::new()),
+            agents: RwLock::new(HashMap::new()),
         }
     }
 

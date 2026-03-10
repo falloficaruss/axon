@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -10,8 +8,8 @@ use ratatui::{
 
 use chrono::{DateTime, Local};
 
-use crate::types::{Agent, AgentState, Session, SessionMode};
 use crate::persistence::SessionMetadata;
+use crate::types::{Agent, AgentState, Session, SessionMode};
 
 /// Sidebar component for displaying sessions and agents
 pub struct Sidebar {
@@ -68,9 +66,10 @@ impl Sidebar {
         // Refresh timestamp at the bottom
         if let Some(ts) = self.last_refresh {
             let refresh_text = format!("Refreshed: {}", ts.format("%H:%M:%S"));
-            let paragraph = Paragraph::new(Line::from(vec![
-                Span::styled(refresh_text, Style::default().fg(Color::DarkGray)),
-            ]));
+            let paragraph = Paragraph::new(Line::from(vec![Span::styled(
+                refresh_text,
+                Style::default().fg(Color::DarkGray),
+            )]));
             frame.render_widget(paragraph, layout[2]);
         }
     }
@@ -141,8 +140,18 @@ impl Sidebar {
     }
 
     /// Draw sessions list
-    fn draw_sessions(&self, frame: &mut Frame, area: Rect, sessions: &[SessionMetadata], current_session_id: &str) {
-        let border_color = if self.focused { Color::Yellow } else { Color::Cyan };
+    fn draw_sessions(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        sessions: &[SessionMetadata],
+        current_session_id: &str,
+    ) {
+        let border_color = if self.focused {
+            Color::Yellow
+        } else {
+            Color::Cyan
+        };
         let block = Block::default()
             .title(" Sessions ")
             .borders(Borders::ALL)
@@ -154,17 +163,25 @@ impl Sidebar {
             .map(|(i, s)| {
                 let is_current = s.id == current_session_id;
                 let is_selected = i == self.selected_session;
-                
+
                 let mut style = Style::default();
                 if is_selected {
-                    let bg = if self.focused { Color::Yellow } else { Color::Black };
-                    let fg = if self.focused { Color::Black } else { Color::White };
+                    let bg = if self.focused {
+                        Color::Yellow
+                    } else {
+                        Color::Black
+                    };
+                    let fg = if self.focused {
+                        Color::Black
+                    } else {
+                        Color::White
+                    };
                     style = style.bg(bg).fg(fg).add_modifier(Modifier::BOLD);
                 }
-                
+
                 let prefix = if is_current { "* " } else { "  " };
                 let content = format!("{}{}", prefix, s.title);
-                
+
                 ListItem::new(content).style(style)
             })
             .collect();

@@ -2,8 +2,6 @@
 //!
 //! This module provides the IntegratorAgent implementation for synthesizing results from multiple agents.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

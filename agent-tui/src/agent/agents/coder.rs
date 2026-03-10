@@ -2,8 +2,6 @@
 //!
 //! This module provides the CoderAgent implementation for code generation and editing.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use std::collections::HashMap;

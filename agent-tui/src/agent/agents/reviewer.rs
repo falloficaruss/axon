@@ -2,8 +2,6 @@
 //!
 //! This module provides the ReviewerAgent implementation for code review and analysis.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};

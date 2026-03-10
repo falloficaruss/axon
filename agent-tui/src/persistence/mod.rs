@@ -2,8 +2,6 @@
 //!
 //! This module handles saving and loading sessions and memory.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

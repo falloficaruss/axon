@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},

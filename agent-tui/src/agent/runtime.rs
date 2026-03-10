@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use futures::StreamExt;
 
 use crate::{
-    llm::LlmClient,
+    llm::{LlmClient, LlmProvider},
     shared::SharedMemory,
     types::{Agent, AgentState, AgentRole, Message, Task, TaskResult, Id, ExecutionContext},
     agent::TaskProcessor,
@@ -155,18 +155,18 @@ pub enum AgentResponse {
 }
 
 /// Agent runtime that manages the execution of a single agent
-pub struct AgentRuntime {
+pub struct AgentRuntime<L: LlmProvider = LlmClient> {
     agent: Arc<RwLock<Agent>>,
-    llm_client: Arc<LlmClient>,
+    llm_client: Arc<L>,
     shared_memory: Arc<SharedMemory>,
     event_tx: mpsc::Sender<AgentEvent>,
 }
 
-impl AgentRuntime {
+impl<L: LlmProvider> AgentRuntime<L> {
     /// Create a new agent runtime
     pub fn new(
         agent: Arc<RwLock<Agent>>,
-        llm_client: Arc<LlmClient>,
+        llm_client: Arc<L>,
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Self {
@@ -322,20 +322,8 @@ impl AgentRuntime {
         }
     }
 
-    /// Build the system prompt with shared memory context injected.
-    /// This deduplicates the prompt construction that was previously copy-pasted
-    /// across handle_process_task, handle_stream_chat, and handle_chat.
-    async fn build_system_prompt(&self, agent_id: &Id, session_id: &str) -> String {
-        let mut system_prompt = {
-            let agent = self.agent.read().await;
-            if agent.system_prompt.is_empty() {
-                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
-            } else {
-                agent.system_prompt.clone()
-            }
-        };
-
-        // Inject shared memory context
+    /// Inject shared memory context into the system prompt
+    async fn inject_shared_memory_context(&self, agent_id: &Id, session_id: &str, prompt: &mut String) {
         let mut shared_context = String::from("\n\nShared Memory Context:\n");
         let mut has_context = false;
 
@@ -355,8 +343,22 @@ impl AgentRuntime {
         }
 
         if has_context {
-            system_prompt.push_str(&shared_context);
+            prompt.push_str(&shared_context);
         }
+    }
+
+    /// Build the system prompt with shared memory context injected.
+    async fn build_system_prompt(&self, agent_id: &Id, session_id: &str) -> String {
+        let mut system_prompt = {
+            let agent = self.agent.read().await;
+            if agent.system_prompt.is_empty() {
+                format!("You are a {} agent. {}", agent.role.as_str(), agent.role.description())
+            } else {
+                agent.system_prompt.clone()
+            }
+        };
+
+        self.inject_shared_memory_context(agent_id, session_id, &mut system_prompt).await;
 
         system_prompt
     }
@@ -553,14 +555,14 @@ impl AgentInstance {
 }
 
 /// Builder for creating agent instances
-pub struct AgentRuntimeBuilder {
+pub struct AgentRuntimeBuilder<L: LlmProvider = LlmClient> {
     agent: Option<Agent>,
-    llm_client: Option<Arc<LlmClient>>,
+    llm_client: Option<Arc<L>>,
     shared_memory: Option<Arc<SharedMemory>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
-impl AgentRuntimeBuilder {
+impl<L: LlmProvider> AgentRuntimeBuilder<L> {
     /// Create a new builder
     pub fn new() -> Self {
         Self {
@@ -578,7 +580,7 @@ impl AgentRuntimeBuilder {
     }
 
     /// Set the LLM client
-    pub fn llm_client(mut self, client: Arc<LlmClient>) -> Self {
+    pub fn llm_client(mut self, client: Arc<L>) -> Self {
         self.llm_client = Some(client);
         self
     }
@@ -613,7 +615,7 @@ impl AgentRuntimeBuilder {
     }
 }
 
-impl Default for AgentRuntimeBuilder {
+impl<L: LlmProvider> Default for AgentRuntimeBuilder<L> {
     fn default() -> Self {
         Self::new()
     }
@@ -858,13 +860,13 @@ mod tests {
 
     #[test]
     fn test_agent_runtime_builder_new() {
-        let builder = AgentRuntimeBuilder::new();
+        let builder = AgentRuntimeBuilder::<LlmClient>::new();
         let _ = builder;
     }
 
     #[test]
     fn test_agent_runtime_builder_default() {
-        let builder = AgentRuntimeBuilder::default();
+        let builder = AgentRuntimeBuilder::<LlmClient>::default();
         let _ = builder;
     }
 
@@ -908,7 +910,7 @@ mod tests {
         let shared_memory = Arc::new(SharedMemory::new());
         let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
 
-        let builder = AgentRuntimeBuilder::new()
+        let builder = AgentRuntimeBuilder::<LlmClient>::new()
             .agent(agent)
             .shared_memory(shared_memory)
             .event_tx(event_tx);

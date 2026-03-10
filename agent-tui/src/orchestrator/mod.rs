@@ -2,8 +2,6 @@
 //!
 //! This module handles multi-agent orchestration, task routing, and execution.
 
-#![allow(dead_code)]
-
 pub mod pool;
 
 pub use pool::AgentPool;

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -426,10 +424,7 @@ pub enum AppEvent {
     /// New message received
     MessageReceived(Message),
     /// Part of a streaming message received
-    MessageUpdate {
-        agent_id: Id,
-        content: String,
-    },
+    MessageUpdate { agent_id: Id, content: String },
     /// Agent state changed
     AgentStateChanged(Id, AgentState),
     /// Task status changed
@@ -632,8 +627,7 @@ mod tests {
             Subtask::new("Write module B", TaskType::CodeGeneration),
         ];
 
-        let mut plan = Plan::new(task.clone())
-            .with_subtasks(subtasks);
+        let mut plan = Plan::new(task.clone()).with_subtasks(subtasks);
 
         // Create parallel groups after plan is created
         let parallel_group = vec![plan.subtasks[1].id.clone(), plan.subtasks[2].id.clone()];
