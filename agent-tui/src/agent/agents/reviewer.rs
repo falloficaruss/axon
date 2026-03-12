@@ -12,6 +12,8 @@ use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
+use async_trait::async_trait;
+
 /// Severity level for a code review issue
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IssueSeverity {
@@ -67,8 +69,9 @@ pub struct ReviewResult {
 /// Reviewer agent for code review and analysis
 pub struct ReviewerAgent;
 
+#[async_trait]
 impl TaskProcessor for ReviewerAgent {
-    fn process_task(
+    async fn process_task(
         &self,
         task: &Task,
         response: &str,

@@ -13,6 +13,8 @@ use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
+use async_trait::async_trait;
+
 /// Code block extracted from LLM response
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeBlock {
@@ -49,8 +51,9 @@ pub enum FileOperation {
 /// Coder agent for code generation and editing
 pub struct CoderAgent;
 
+#[async_trait]
 impl TaskProcessor for CoderAgent {
-    fn process_task(
+    async fn process_task(
         &self,
         task: &Task,
         response: &str,

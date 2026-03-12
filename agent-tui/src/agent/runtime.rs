@@ -410,7 +410,7 @@ impl<L: LlmProvider> AgentRuntime<L> {
 
                 // Process the response using specialized agent logic via TaskProcessor trait
                 let mut result = if let Some(processor) = Self::get_processor(agent_role) {
-                    match processor.process_task(&task, &response, self.shared_memory.clone()) {
+                    match processor.process_task(&task, &response, self.shared_memory.clone()).await {
                         Ok(res) => res,
                         Err(e) => {
                             warn!("Agent {} specialized processing failed: {}", agent_id, e);

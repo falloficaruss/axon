@@ -284,7 +284,8 @@ axon/
 │   │   │   ├── components/  # UI components
 │   │   │   └── markdown.rs  # Markdown rendering
 │   │   ├── types/       # Core types
-│   │   └── shared/      # Shared utilities
+│   │   ├── shared/      # Shared memory
+│   │   └── persistence/ # Persistence layer
 │   └── target/          # Build artifacts
 └── .gitignore           # Git ignore patterns
 ```

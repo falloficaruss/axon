@@ -11,6 +11,8 @@ use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
 use crate::types::{Agent, AgentRole, Capability, Plan, Subtask, Task, TaskResult, TaskType};
 
+use async_trait::async_trait;
+
 /// A dependency relationship between subtasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dependency {
@@ -64,8 +66,9 @@ pub struct SubtaskInfo {
 /// Planner agent for task decomposition and orchestration
 pub struct PlannerAgent;
 
+#[async_trait]
 impl TaskProcessor for PlannerAgent {
-    fn process_task(
+    async fn process_task(
         &self,
         task: &Task,
         response: &str,

@@ -15,6 +15,8 @@ use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
+use async_trait::async_trait;
+
 /// Type of test
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TestType {
@@ -92,8 +94,9 @@ pub struct TestFile {
 /// Tester agent for test generation and execution
 pub struct TesterAgent;
 
+#[async_trait]
 impl TaskProcessor for TesterAgent {
-    fn process_task(
+    async fn process_task(
         &self,
         task: &Task,
         response: &str,

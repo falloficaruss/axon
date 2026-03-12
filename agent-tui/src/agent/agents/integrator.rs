@@ -11,6 +11,8 @@ use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
+use async_trait::async_trait;
+
 /// A single result from an agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResult {
@@ -46,8 +48,9 @@ pub struct SynthesisResult {
 /// Integrator agent for result synthesis
 pub struct IntegratorAgent;
 
+#[async_trait]
 impl TaskProcessor for IntegratorAgent {
-    fn process_task(
+    async fn process_task(
         &self,
         task: &Task,
         response: &str,

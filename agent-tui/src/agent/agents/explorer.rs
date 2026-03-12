@@ -14,6 +14,8 @@ use crate::agent::TaskProcessor;
 use crate::shared::SharedMemory;
 use crate::types::{Agent, AgentRole, Capability, Task, TaskResult, TaskType};
 
+use async_trait::async_trait;
+
 /// Information about a file in the codebase
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
@@ -83,8 +85,9 @@ pub struct CodebaseSummary {
 /// Explorer agent for codebase exploration
 pub struct ExplorerAgent;
 
+#[async_trait]
 impl TaskProcessor for ExplorerAgent {
-    fn process_task(
+    async fn process_task(
         &self,
         task: &Task,
         response: &str,
