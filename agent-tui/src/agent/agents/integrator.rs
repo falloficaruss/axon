@@ -515,8 +515,8 @@ High confidence (85%)
         assert!(conflicts.iter().any(|c| c.contains("Potential conflict")));
     }
 
-    #[test]
-    fn test_process_synthesis_task() {
+    #[tokio::test]
+    async fn test_process_synthesis_task() {
         let task = Task::new("Synthesize results", TaskType::Synthesis);
         let response = r#"## Summary
 All results integrated successfully.
@@ -532,7 +532,7 @@ Confidence: 90%
 
         let agent = IntegratorAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(result.success);
         assert_eq!(
@@ -541,8 +541,8 @@ Confidence: 90%
         );
     }
 
-    #[test]
-    fn test_process_low_confidence_synthesis() {
+    #[tokio::test]
+    async fn test_process_low_confidence_synthesis() {
         let task = Task::new("Synthesize results", TaskType::Synthesis);
         let response = r#"## Summary
 Integration incomplete.
@@ -555,7 +555,7 @@ Low confidence: 30%"#;
 
         let agent = IntegratorAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(!result.success);
         assert!(result.error.is_some());
@@ -565,14 +565,14 @@ Low confidence: 30%"#;
         );
     }
 
-    #[test]
-    fn test_process_unsupported_task_type() {
+    #[tokio::test]
+    async fn test_process_unsupported_task_type() {
         let task = Task::new("Write code", TaskType::CodeGeneration);
         let response = "Some response";
 
         let agent = IntegratorAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory);
+        let result = agent.process_task(&task, response, shared_memory).await;
         assert!(result.is_err());
     }
 }

@@ -643,8 +643,8 @@ Second file:\n\
 
     // ==================== Task Processing Tests ====================
 
-    #[test]
-    fn test_process_code_generation_task() {
+    #[tokio::test]
+    async fn test_process_code_generation_task() {
         let task = Task::new("Generate a Rust function", TaskType::CodeGeneration);
         let llm_response =
             "Here's the code:\n```rust\nfn hello() {\n    println!(\"Hello\");\n}\n```";
@@ -653,6 +653,7 @@ Second file:\n\
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent
             .process_task(&task, llm_response, shared_memory)
+            .await
             .unwrap();
         assert!(result.success);
         assert!(result.output.contains("fn hello()"));
@@ -662,8 +663,8 @@ Second file:\n\
         assert_eq!(code_blocks_count, &serde_json::json!(1));
     }
 
-    #[test]
-    fn test_process_code_generation_with_file_path() {
+    #[tokio::test]
+    async fn test_process_code_generation_with_file_path() {
         let task = Task::new("Generate a main function", TaskType::CodeGeneration);
         let llm_response =
             "```rust:src/main.rs\nfn main() {\n    println!(\"Hello, world!\");\n}\n```";
@@ -672,6 +673,7 @@ Second file:\n\
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent
             .process_task(&task, llm_response, shared_memory)
+            .await
             .unwrap();
         assert!(result.success);
 
@@ -679,8 +681,8 @@ Second file:\n\
         assert_eq!(generated_files, &serde_json::json!(vec!["src/main.rs"]));
     }
 
-    #[test]
-    fn test_process_code_edit_task() {
+    #[tokio::test]
+    async fn test_process_code_edit_task() {
         let task = Task::new("Edit function", TaskType::CodeEdit);
         let llm_response =
             "Updated:\n```python:app.py\ndef greet(name):\n    print(f\"Hello, {name}!\")\n```";
@@ -689,6 +691,7 @@ Second file:\n\
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent
             .process_task(&task, llm_response, shared_memory)
+            .await
             .unwrap();
         assert!(result.success);
 
@@ -696,8 +699,8 @@ Second file:\n\
         assert_eq!(edited_files, &serde_json::json!(vec!["app.py"]));
     }
 
-    #[test]
-    fn test_process_task_no_code_blocks() {
+    #[tokio::test]
+    async fn test_process_task_no_code_blocks() {
         let task = Task::new("Explain code", TaskType::CodeGeneration);
         let llm_response = "This is just an explanation without any code blocks.";
 
@@ -705,20 +708,21 @@ Second file:\n\
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent
             .process_task(&task, llm_response, shared_memory)
+            .await
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output, llm_response);
         assert!(result.metadata.is_empty());
     }
 
-    #[test]
-    fn test_process_unsupported_task_type() {
+    #[tokio::test]
+    async fn test_process_unsupported_task_type() {
         let task = Task::new("Review code", TaskType::CodeReview);
         let llm_response = "Some response";
 
         let agent = CoderAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, llm_response, shared_memory);
+        let result = agent.process_task(&task, llm_response, shared_memory).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -726,8 +730,8 @@ Second file:\n\
             .contains("Unsupported task type"));
     }
 
-    #[test]
-    fn test_process_multiple_code_blocks() {
+    #[tokio::test]
+    async fn test_process_multiple_code_blocks() {
         let task = Task::new("Generate multiple files", TaskType::CodeGeneration);
         let llm_response = "First file:\n\
 ```rust:src/lib.rs\npub fn lib_fn() {}\n```\n\
@@ -738,6 +742,7 @@ Second file:\n\
         let shared_memory = Arc::new(SharedMemory::new());
         let result = agent
             .process_task(&task, llm_response, shared_memory)
+            .await
             .unwrap();
         assert!(result.success);
 

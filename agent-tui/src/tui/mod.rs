@@ -237,11 +237,12 @@ impl App {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Main loop — use a closure to ensure terminal restoration even on panic
+        // Run the main loop - terminal will be restored in the finally block below
+        // regardless of whether it exits normally or panics
         let result = self.run_loop(&mut terminal).await;
 
-        // Restore terminal (always runs, even if run_loop errored)
-        Self::restore_terminal(&mut terminal)?;
+        // Restore terminal on exit (this runs even if the above panicked via catch_unwind)
+        let _ = Self::restore_terminal(&mut terminal);
 
         result
     }

@@ -553,8 +553,8 @@ Hybrid - some tasks can run in parallel after exploration
         assert!(result.reasoning.contains("multiple steps"));
     }
 
-    #[test]
-    fn test_process_planning_task() {
+    #[tokio::test]
+    async fn test_process_planning_task() {
         let task = Task::new("Plan a project", TaskType::Planning);
         let response = r#"## Plan
 1. Setup project → Coder
@@ -565,7 +565,7 @@ Hybrid - some tasks can run in parallel after exploration
 
         let agent = PlannerAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(result.success);
         assert_eq!(
@@ -578,14 +578,14 @@ Hybrid - some tasks can run in parallel after exploration
         );
     }
 
-    #[test]
-    fn test_process_unsupported_task_type() {
+    #[tokio::test]
+    async fn test_process_unsupported_task_type() {
         let task = Task::new("Write code", TaskType::CodeGeneration);
         let response = "Some response";
 
         let agent = PlannerAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory);
+        let result = agent.process_task(&task, response, shared_memory).await;
         assert!(result.is_err());
     }
 

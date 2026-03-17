@@ -83,13 +83,13 @@ mod tests {
     // Tests for reviewer agent - testing via TaskProcessor trait
     // Note: parse_review_response is private, so we test through process_task
 
-    #[test]
-    fn test_planner_extract_plan() {
+    #[tokio::test]
+    async fn test_planner_extract_plan() {
         let response = "Plan:\n```json\n{\"subtasks\": [{\"description\": \"test\", \"agent\": \"coder\"}]}\n```";
         let agent = PlannerAgent;
         let task = Task::new("desc", TaskType::Planning);
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
         assert!(result.metadata.contains_key("plan"));
         assert_eq!(
             result.metadata["has_structured_plan"],
@@ -97,13 +97,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_tester_extract_results() {
+    #[tokio::test]
+    async fn test_tester_extract_results() {
         let response = "Results:\n* [PASS] test_1\n* [FAIL] test_2\n```rust\nfn test() {}\n```";
         let agent = TesterAgent;
         let task = Task::new("desc", TaskType::TestExecution);
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
         assert_eq!(result.metadata["passed_count"], serde_json::json!(1));
         assert_eq!(result.metadata["failed_count"], serde_json::json!(1));
         assert_eq!(
@@ -113,13 +113,13 @@ mod tests {
         assert!(!result.success);
     }
 
-    #[test]
-    fn test_explorer_extract_info() {
+    #[tokio::test]
+    async fn test_explorer_extract_info() {
         let response = "Found:\n* File: src/lib.rs\n* Symbol: my_func";
         let agent = ExplorerAgent;
         let task = Task::new("desc", TaskType::Exploration);
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
         assert_eq!(
             result.metadata["discovered_files"],
             serde_json::json!(vec!["src/lib.rs"])

@@ -849,8 +849,8 @@ def my_function():
         assert!(results[0].line_content.contains("fn hello"));
     }
 
-    #[test]
-    fn test_process_exploration_task() {
+    #[tokio::test]
+    async fn test_process_exploration_task() {
         let task = Task::new("Explore codebase", TaskType::Exploration);
         let response = r#"## Overview
 Found 50 files with 2500 lines of code.
@@ -865,7 +865,7 @@ Found 50 files with 2500 lines of code.
 
         let agent = ExplorerAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(result.success);
         assert_eq!(
@@ -878,14 +878,14 @@ Found 50 files with 2500 lines of code.
         );
     }
 
-    #[test]
-    fn test_process_unsupported_task_type() {
+    #[tokio::test]
+    async fn test_process_unsupported_task_type() {
         let task = Task::new("Write code", TaskType::CodeGeneration);
         let response = "Some response";
 
         let agent = ExplorerAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory);
+        let result = agent.process_task(&task, response, shared_memory).await;
         assert!(result.is_err());
     }
 }

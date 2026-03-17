@@ -633,8 +633,8 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured"#;
         assert_eq!(result.skipped, 1);
     }
 
-    #[test]
-    fn test_process_test_generation_task() {
+    #[tokio::test]
+    async fn test_process_test_generation_task() {
         let task = Task::new("Write unit tests", TaskType::TestGeneration);
         let response = r#"```rust:tests/test_lib.rs
 #[test]
@@ -645,7 +645,7 @@ fn test_function() {
 
         let agent = TesterAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(result.success);
         assert_eq!(
@@ -654,14 +654,14 @@ fn test_function() {
         );
     }
 
-    #[test]
-    fn test_process_test_execution_task_success() {
+    #[tokio::test]
+    async fn test_process_test_execution_task_success() {
         let task = Task::new("Run tests", TaskType::TestExecution);
         let response = "test result: ok. 10 passed; 0 failed; 0 ignored";
 
         let agent = TesterAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(result.success);
         assert_eq!(
@@ -670,14 +670,14 @@ fn test_function() {
         );
     }
 
-    #[test]
-    fn test_process_test_execution_task_failure() {
+    #[tokio::test]
+    async fn test_process_test_execution_task_failure() {
         let task = Task::new("Run tests", TaskType::TestExecution);
         let response = "test result: FAILED. 8 passed; 2 failed; 0 ignored";
 
         let agent = TesterAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(!result.success);
         assert_eq!(
@@ -687,14 +687,14 @@ fn test_function() {
         assert!(result.error.is_some());
     }
 
-    #[test]
-    fn test_process_unsupported_task_type() {
+    #[tokio::test]
+    async fn test_process_unsupported_task_type() {
         let task = Task::new("Write code", TaskType::CodeGeneration);
         let response = "Some response";
 
         let agent = TesterAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory);
+        let result = agent.process_task(&task, response, shared_memory).await;
         assert!(result.is_err());
     }
 

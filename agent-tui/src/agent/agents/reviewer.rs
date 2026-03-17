@@ -392,8 +392,8 @@ def helper():
         assert_eq!(files[1].0, "utils.py");
     }
 
-    #[test]
-    fn test_process_code_review_task() {
+    #[tokio::test]
+    async fn test_process_code_review_task() {
         let task = Task::new("Review this code", TaskType::CodeReview);
         let response = r#"## Summary
 Code looks good.
@@ -402,7 +402,7 @@ Code looks good.
 
         let agent = ReviewerAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory).unwrap();
+        let result = agent.process_task(&task, response, shared_memory).await.unwrap();
 
         assert!(result.success);
         assert_eq!(
@@ -411,14 +411,14 @@ Code looks good.
         );
     }
 
-    #[test]
-    fn test_process_unsupported_task_type() {
+    #[tokio::test]
+    async fn test_process_unsupported_task_type() {
         let task = Task::new("Write code", TaskType::CodeGeneration);
         let response = "Some response";
 
         let agent = ReviewerAgent;
         let shared_memory = Arc::new(SharedMemory::new());
-        let result = agent.process_task(&task, response, shared_memory);
+        let result = agent.process_task(&task, response, shared_memory).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
