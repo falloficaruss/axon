@@ -8,7 +8,10 @@ use crate::shared::SharedMemory;
 use anyhow::Result;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 /// Trait for specialized agent task processing
+#[async_trait]
 pub trait TaskProcessor: Send + Sync {
     async fn process_task(&self, task: &Task, response: &str, shared_memory: Arc<SharedMemory>) -> Result<TaskResult>;
 }

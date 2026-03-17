@@ -37,6 +37,14 @@ use self::components::{Chat, Input, Sidebar};
 use crate::persistence::{SessionStore, MemoryStore, SessionMetadata};
 use crate::shared::SharedMemory;
 
+/// Represents a pending confirmation request
+pub struct PendingConfirmation {
+    pub title: String,
+    pub message: String,
+    pub changes: Vec<crate::agent::agents::coder::CodeChange>,
+    pub response_tx: tokio::sync::oneshot::Sender<bool>,
+}
+
 /// Main application state
 pub struct App {
     /// Application configuration
@@ -98,6 +106,8 @@ pub struct App {
     cached_agents: Vec<Agent>,
     /// Selected agent index for agent selector (separate from sidebar)
     agent_selected_index: usize,
+    /// Pending confirmation request
+    pending_confirmation: Option<PendingConfirmation>,
 }
 
 /// Application modes
@@ -214,6 +224,7 @@ impl App {
             current_task_handle: None,
             cached_agents: Vec::new(),
             agent_selected_index: 0,
+            pending_confirmation: None,
         })
     }
 
@@ -484,12 +495,18 @@ impl App {
                 _ => {}
             },
             AppMode::Confirm => match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    // TODO: Confirm action
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    if let Some(pending) = self.pending_confirmation.take() {
+                        let _ = pending.response_tx.send(true);
+                        self.add_system_message("Action confirmed.");
+                    }
                     self.mode = AppMode::Normal;
                 }
-                KeyCode::Char('n') | KeyCode::Esc => {
-                    // TODO: Cancel action
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    if let Some(pending) = self.pending_confirmation.take() {
+                        let _ = pending.response_tx.send(false);
+                        self.add_system_message("Action rejected.");
+                    }
                     self.mode = AppMode::Normal;
                 }
                 _ => {}
@@ -587,6 +604,17 @@ impl App {
             }
             AgentEvent::StateChanged { agent_id, state } => {
                 let _ = self.event_tx.send(AppEvent::AgentStateChanged(agent_id, state)).await;
+            }
+            AgentEvent::ConfirmationRequest { agent_id, title, message, changes, response_tx } => {
+                debug!("Agent {} requested confirmation: {}", agent_id, title);
+                self.pending_confirmation = Some(PendingConfirmation {
+                    title: title.clone(),
+                    message: message.clone(),
+                    changes,
+                    response_tx,
+                });
+                self.mode = AppMode::Confirm;
+                self.add_system_message(&format!("Agent {} is requesting confirmation for file operations.", agent_id));
             }
         }
         Ok(())
@@ -1146,6 +1174,9 @@ impl App {
             AppMode::MemoryManager => {
                 self.draw_memory_manager(frame);
             }
+            AppMode::Confirm => {
+                self.draw_confirmation_dialog(frame);
+            }
             _ => {}
         }
 
@@ -1180,6 +1211,62 @@ impl App {
 
         text.push(Line::from(""));
         text.push(Line::from("Press number to select, ESC to cancel"));
+
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .wrap(Wrap { trim: true });
+
+        frame.render_widget(Clear, area);
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Draw confirmation dialog popup
+    fn draw_confirmation_dialog(&self, frame: &mut Frame) {
+        let area = Self::centered_rect(70, 70, frame.area());
+        
+        let block = Block::default()
+            .title(self.pending_confirmation.as_ref().map(|p| p.title.as_str()).unwrap_or("Confirmation"))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+
+        let mut text = Vec::new();
+        
+        if let Some(pending) = &self.pending_confirmation {
+            text.push(Line::from(pending.message.clone()));
+            text.push(Line::from(""));
+            text.push(Line::from(format!("Files ({}):", pending.changes.len())));
+            
+            for change in &pending.changes {
+                let op_str = match change.operation {
+                    crate::agent::agents::coder::FileOperation::Create => " [CREATE] ",
+                    crate::agent::agents::coder::FileOperation::Update => " [UPDATE] ",
+                    crate::agent::agents::coder::FileOperation::Delete => " [DELETE] ",
+                };
+                
+                let op_color = match change.operation {
+                    crate::agent::agents::coder::FileOperation::Create => Color::Green,
+                    crate::agent::agents::coder::FileOperation::Update => Color::Yellow,
+                    crate::agent::agents::coder::FileOperation::Delete => Color::Red,
+                };
+
+                let line = Line::from(vec![
+                    ratatui::text::Span::styled(op_str, Style::default().fg(op_color).add_modifier(Modifier::BOLD)),
+                    ratatui::text::Span::raw(change.file_path.to_string_lossy().to_string()),
+                ]);
+                text.push(line);
+            }
+        } else {
+            text.push(Line::from("No pending confirmation."));
+        }
+
+        text.push(Line::from(""));
+        text.push(Line::from(vec![
+            ratatui::text::Span::raw("Press "),
+            ratatui::text::Span::styled("y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ratatui::text::Span::raw(" to accept, "),
+            ratatui::text::Span::styled("n", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            ratatui::text::Span::raw(" to reject."),
+        ]));
 
         let paragraph = Paragraph::new(text)
             .block(block)

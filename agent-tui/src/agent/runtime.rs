@@ -46,7 +46,7 @@ pub enum AgentCommand {
 }
 
 /// Events that an agent can emit
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AgentEvent {
     /// Agent started processing
     Started { agent_id: Id },
@@ -69,6 +69,14 @@ pub enum AgentEvent {
     StateChanged { 
         agent_id: Id, 
         state: AgentState 
+    },
+    /// Agent requests confirmation for an action
+    ConfirmationRequest {
+        agent_id: Id,
+        title: String,
+        message: String,
+        changes: Vec<crate::agent::agents::coder::CodeChange>,
+        response_tx: oneshot::Sender<bool>,
     },
 }
 
@@ -274,50 +282,78 @@ impl<L: LlmProvider> AgentRuntime<L> {
         let metadata_keys = [("generated_files", crate::agent::agents::coder::FileOperation::Create), 
                             ("edited_files", crate::agent::agents::coder::FileOperation::Update)];
         
+        let mut changes = Vec::new();
+
         for (key, operation) in metadata_keys {
             if let Some(files_value) = result.metadata.get(key) {
                 if let Some(files) = files_value.as_array() {
                     if files.is_empty() { continue; }
 
-                    info!("Agent {} {} {} files, applying changes...", agent_id, if key.starts_with("gen") { "generated" } else { "edited" }, files.len());
-                    
                     match crate::agent::agents::coder::CoderAgent::extract_code_blocks(response) {
                         Ok(blocks) => {
-                            let changes: Vec<_> = blocks.into_iter()
-                                .filter(|b| b.file_path.is_some())
-                                .map(|b| crate::agent::agents::coder::CodeChange {
-                                    file_path: std::path::PathBuf::from(b.file_path.unwrap()),
-                                    content: b.code,
-                                    operation: operation.clone(),
-                                })
-                                .collect();
-                            
-                            // Simple validation: check if metadata file list matches extracted blocks
-                            let extracted_paths: std::collections::HashSet<_> = changes.iter()
-                                .map(|c| c.file_path.to_string_lossy().to_string())
-                                .collect();
-                            
-                            for file_val in files {
-                                if let Some(path) = file_val.as_str() {
-                                    if !extracted_paths.contains(path) {
-                                        warn!("Agent {} metadata specifies file '{}' but it was not found in code blocks", agent_id, path);
-                                    }
+                            for block in blocks {
+                                if let Some(path_str) = block.file_path {
+                                    let path = std::path::PathBuf::from(path_str);
+                                    changes.push(crate::agent::agents::coder::CodeChange {
+                                        file_path: path,
+                                        content: block.code,
+                                        operation: operation.clone(),
+                                    });
                                 }
-                            }
-
-                            if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
-                                error!("Agent {} failed to apply changes: {}", agent_id, e);
-                                result.success = false;
-                                result.error = Some(format!("Failed to apply changes: {}", e));
                             }
                         }
                         Err(e) => {
                             error!("Agent {} failed to extract code blocks: {}", agent_id, e);
                             result.success = false;
                             result.error = Some(format!("Failed to parse code blocks: {}", e));
+                            return;
                         }
                     }
                 }
+            }
+        }
+
+        if changes.is_empty() {
+            return;
+        }
+
+        // Request confirmation from the user
+        let (tx, rx) = oneshot::channel();
+        let title = "Confirm File Operations".to_string();
+        let message = format!("Agent {} wants to apply changes to {} files. Do you want to proceed?", agent_id, changes.len());
+        
+        if let Err(e) = self.event_tx.send(AgentEvent::ConfirmationRequest {
+            agent_id: agent_id.clone(),
+            title,
+            message,
+            changes: changes.clone(),
+            response_tx: tx,
+        }).await {
+            error!("Failed to send confirmation request for agent {}: {}", agent_id, e);
+            result.success = false;
+            result.error = Some(format!("Failed to request confirmation: {}", e));
+            return;
+        }
+
+        // Wait for confirmation response
+        match rx.await {
+            Ok(true) => {
+                info!("Agent {} confirmation received, applying changes...", agent_id);
+                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
+                    error!("Agent {} failed to apply changes: {}", agent_id, e);
+                    result.success = false;
+                    result.error = Some(format!("Failed to apply changes: {}", e));
+                }
+            }
+            Ok(false) => {
+                info!("Agent {} confirmation rejected, skipping file changes", agent_id);
+                result.success = true; // Still successful, but changes were rejected
+                result.output.push_str("\n\n(File changes were rejected by user)");
+            }
+            Err(_) => {
+                error!("Agent {} confirmation channel closed without response", agent_id);
+                result.success = false;
+                result.error = Some("Confirmation request was cancelled or timed out".to_string());
             }
         }
     }

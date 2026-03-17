@@ -22,6 +22,9 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(test, feature = "mock-llm"))]
 use tokio::sync::RwLock;
 
+use async_trait::async_trait;
+
+#[async_trait]
 pub trait LlmProvider: Send + Sync + 'static {
     /// Send a message and get a response
     async fn send_message(&self, messages: &[Message]) -> Result<String>;
@@ -112,6 +115,7 @@ impl LlmClient {
     }
 }
 
+#[async_trait]
 impl LlmProvider for LlmClient {
     /// Send a message and get a response
     async fn send_message(&self, messages: &[Message]) -> Result<String> {
@@ -280,6 +284,7 @@ impl MockLlmClient {
 }
 
 #[cfg(any(test, feature = "mock-llm"))]
+#[async_trait]
 impl LlmProvider for MockLlmClient {
     /// Send a message and get a response (mock implementation)
     async fn send_message(&self, messages: &[Message]) -> Result<String> {

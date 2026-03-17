@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     agent::{AgentEvent, AgentRegistry},
-    llm::LlmClient,
+    llm::{LlmClient, LlmProvider},
     shared::SharedMemory,
     types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType, Plan, Subtask, ExecutionContext},
 };
