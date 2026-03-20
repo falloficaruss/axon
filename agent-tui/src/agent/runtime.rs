@@ -27,6 +27,7 @@ pub enum AgentCommand {
         context: ExecutionContext,
     },
     /// Send a chat message to the agent
+    #[allow(dead_code)]
     Chat {
         message: String,
         history: Vec<Message>,
@@ -114,6 +115,7 @@ impl AgentHandle {
     }
 
     /// Send a chat message
+    #[allow(dead_code)]
     pub async fn chat(&self, message: String, history: Vec<Message>, context: ExecutionContext) -> Result<String> {
         match self.send_command(AgentCommand::Chat { message, history, context }).await? {
             AgentResponse::ChatResponse(content) => Ok(content),
@@ -580,6 +582,7 @@ impl AgentInstance {
     }
 
     /// Get the agent name
+    #[allow(dead_code)]
     pub fn name(&self) -> String {
         self.handle.agent_name.clone()
     }

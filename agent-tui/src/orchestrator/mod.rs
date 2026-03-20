@@ -362,6 +362,7 @@ pub struct Executor {
     /// Agent pool for managing running agents
     pool: AgentPool,
     /// Shared memory for agents
+    #[allow(dead_code)]
     shared_memory: Arc<SharedMemory>,
 }
 
@@ -404,6 +405,7 @@ impl Executor {
     }
 
     /// Execute a simple chat request with an agent
+    #[allow(dead_code)]
     pub async fn execute_chat(
         &self,
         agent: Agent,
@@ -458,16 +460,19 @@ impl Executor {
     }
 
     /// Get count of currently active agents
+    #[allow(dead_code)]
     pub async fn active_count(&self) -> usize {
         self.pool.active_count().await
     }
 
     /// Check if at capacity
+    #[allow(dead_code)]
     pub async fn is_at_capacity(&self) -> bool {
         self.pool.is_at_capacity().await
     }
 
     /// Get agent state
+    #[allow(dead_code)]
     pub async fn get_agent_state(&self, agent_id: &Id) -> Option<AgentState> {
         self.pool.get_agent_state(agent_id).await
     }
@@ -709,6 +714,7 @@ impl Orchestrator {
     }
 
     /// Execute a chat with a specific agent
+    #[allow(dead_code)]
     pub async fn execute_chat(
         &self,
         agent: Agent,
@@ -731,6 +737,7 @@ impl Orchestrator {
     }
 
     /// Execute a task with a specific agent
+    #[allow(dead_code)]
     pub async fn execute_with_agent(
         &self,
         agent: Agent,

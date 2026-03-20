@@ -16,6 +16,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::{
+    collections::HashMap,
     io,
     time::{Duration, Instant},
 };
@@ -106,6 +107,8 @@ pub struct App {
     cached_agents: Vec<Agent>,
     /// Selected agent index for agent selector (separate from sidebar)
     agent_selected_index: usize,
+    /// Cached memory values for memory manager
+    cached_memory_values: HashMap<String, String>,
     /// Pending confirmation request
     pending_confirmation: Option<PendingConfirmation>,
 }
@@ -224,6 +227,7 @@ impl App {
             current_task_handle: None,
             cached_agents: Vec::new(),
             agent_selected_index: 0,
+            cached_memory_values: HashMap::new(),
             pending_confirmation: None,
         })
     }
@@ -234,20 +238,32 @@ impl App {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        
+        // Use a guard to ensure terminal is restored even on panic
+        struct CleanupGuard;
+        impl Drop for CleanupGuard {
+            fn drop(&mut self) {
+                let _ = disable_raw_mode();
+                let mut stdout = io::stdout();
+                let _ = execute!(
+                    stdout,
+                    LeaveAlternateScreen,
+                    DisableMouseCapture,
+                    crossterm::cursor::Show
+                );
+            }
+        }
+        let _guard = CleanupGuard;
+
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Run the main loop - terminal will be restored in the finally block below
-        // regardless of whether it exits normally or panics
-        let result = self.run_loop(&mut terminal).await;
-
-        // Restore terminal on exit (this runs even if the above panicked via catch_unwind)
-        let _ = Self::restore_terminal(&mut terminal);
-
-        result
+        // Run the main loop
+        self.run_loop(&mut terminal).await
     }
 
     /// Restore terminal to normal state. Called on both normal exit and cleanup.
+    #[allow(dead_code)]
     fn restore_terminal<B: Backend + io::Write>(terminal: &mut Terminal<B>) -> Result<()> {
         disable_raw_mode()?;
         execute!(
@@ -451,6 +467,7 @@ impl App {
                     if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
                         match self.memory_store.get(key, "session").await {
                             Ok(Some(value)) => {
+                                self.cached_memory_values.insert(key.clone(), value.clone());
                                 let msg = Message::system(&format!("Memory [{}]: {}", key, value));
                                 self.session.add_message(msg.clone());
                                 self.chat.add_message(msg);
@@ -1201,12 +1218,17 @@ impl App {
         ];
 
         for (idx, agent) in self.cached_agents.iter().enumerate() {
-            let line = Line::from(format!(
-                "{}. {} - {}",
-                idx + 1,
-                agent.name,
-                agent.description
-            ));
+            let mut style = Style::default();
+            if idx == self.agent_selected_index {
+                style = style.bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD);
+            }
+            
+            let line = Line::from(vec![
+                ratatui::text::Span::styled(format!("{}. ", idx + 1), style),
+                ratatui::text::Span::styled(&agent.name, style),
+                ratatui::text::Span::raw(" - "),
+                ratatui::text::Span::raw(&agent.description),
+            ]);
             text.push(line);
         }
 
@@ -1327,7 +1349,10 @@ impl App {
 
             // Show value of selected key
             if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
-                let value_text = "Press Enter to view value";
+                let value_text = self.cached_memory_values.get(key)
+                    .map(|v| v.as_str())
+                    .unwrap_or("Press Enter to fetch value");
+                
                 let paragraph = Paragraph::new(value_text)
                     .block(Block::default().title(format!(" Value: {} ", key)).borders(Borders::ALL))
                     .wrap(Wrap { trim: true });

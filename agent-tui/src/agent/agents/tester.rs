@@ -33,6 +33,7 @@ pub enum TestType {
 }
 
 impl TestType {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             TestType::Unit => "unit",
@@ -458,6 +459,7 @@ impl TesterAgent {
     }
 
     /// Apply test files to disk
+    #[allow(dead_code)]
     pub fn apply_test_files(test_files: &[TestFile]) -> Result<Vec<String>> {
         let mut applied_files = Vec::new();
 
@@ -479,6 +481,7 @@ impl TesterAgent {
     }
 
     /// Run tests using the appropriate command for the project type
+    #[allow(dead_code)]
     pub fn run_tests(
         project_root: &Path,
         test_command: Option<&str>,

@@ -15,6 +15,7 @@ use async_trait::async_trait;
 
 /// A single result from an agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct AgentResult {
     /// Agent name or ID
     pub agent: String,
@@ -267,6 +268,7 @@ impl IntegratorAgent {
     }
 
     /// Combine multiple task results into a single input for the integrator
+    #[allow(dead_code)]
     pub fn combine_results(results: &[AgentResult]) -> String {
         let mut combined = String::new();
 
@@ -304,6 +306,7 @@ impl IntegratorAgent {
     }
 
     /// Create a structured summary from multiple results
+    #[allow(dead_code)]
     pub fn create_summary(results: &[AgentResult]) -> String {
         let mut summary = String::new();
 
@@ -341,6 +344,7 @@ impl IntegratorAgent {
     }
 
     /// Detect and report conflicts between results
+    #[allow(dead_code)]
     pub fn detect_conflicts(results: &[AgentResult]) -> Vec<String> {
         let mut conflicts = Vec::new();
 

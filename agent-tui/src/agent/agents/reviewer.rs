@@ -28,6 +28,7 @@ pub enum IssueSeverity {
 }
 
 impl IssueSeverity {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             IssueSeverity::Critical => "critical",
@@ -306,6 +307,7 @@ impl ReviewerAgent {
     }
 
     /// Extract code blocks from the response for review
+    #[allow(dead_code)]
     pub fn extract_code_for_review(text: &str) -> Result<Vec<(String, String)>> {
         let mut files = Vec::new();
         let re = Regex::new(r"```(\w+)?(?::([^\n]+))?\n([\s\S]*?)```").unwrap();

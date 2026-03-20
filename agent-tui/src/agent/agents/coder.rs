@@ -45,6 +45,7 @@ pub enum FileOperation {
     /// Update an existing file
     Update,
     /// Delete a file
+    #[allow(dead_code)]
     Delete,
 }
 
@@ -216,6 +217,7 @@ impl CoderAgent {
     }
 
     /// Read a file from disk
+    #[allow(dead_code)]
     pub fn read_file<P: AsRef<Path>>(path: P) -> Result<String> {
         fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read file: {:?}", path.as_ref()))
@@ -261,6 +263,7 @@ impl CoderAgent {
     }
 
     /// Detect programming language from file extension
+    #[allow(dead_code)]
     pub fn detect_language<P: AsRef<Path>>(path: P) -> Option<String> {
         path.as_ref()
             .extension()

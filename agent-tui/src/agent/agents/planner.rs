@@ -15,6 +15,7 @@ use async_trait::async_trait;
 
 /// A dependency relationship between subtasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Dependency {
     /// ID of the dependent subtask
     pub subtask_id: String,
@@ -397,6 +398,7 @@ impl PlannerAgent {
     }
 
     /// Convert a PlanningResult to a Plan object
+    #[allow(dead_code)]
     pub fn planning_result_to_plan(result: PlanningResult, original_task: Task) -> Plan {
         let mut plan = Plan::new(original_task);
 
