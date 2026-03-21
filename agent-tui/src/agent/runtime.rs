@@ -165,14 +165,14 @@ pub enum AgentResponse {
 }
 
 /// Agent runtime that manages the execution of a single agent
-pub struct AgentRuntime<L: LlmProvider = LlmClient> {
+pub struct AgentRuntime<L: LlmProvider + ?Sized = LlmClient> {
     agent: Arc<RwLock<Agent>>,
     llm_client: Arc<L>,
     shared_memory: Arc<SharedMemory>,
     event_tx: mpsc::Sender<AgentEvent>,
 }
 
-impl<L: LlmProvider> AgentRuntime<L> {
+impl<L: LlmProvider + ?Sized> AgentRuntime<L> {
     /// Create a new agent runtime
     pub fn new(
         agent: Arc<RwLock<Agent>>,
@@ -594,14 +594,14 @@ impl AgentInstance {
 }
 
 /// Builder for creating agent instances
-pub struct AgentRuntimeBuilder<L: LlmProvider = LlmClient> {
+pub struct AgentRuntimeBuilder<L: LlmProvider + ?Sized = LlmClient> {
     agent: Option<Agent>,
     llm_client: Option<Arc<L>>,
     shared_memory: Option<Arc<SharedMemory>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
-impl<L: LlmProvider> AgentRuntimeBuilder<L> {
+impl<L: LlmProvider + ?Sized> AgentRuntimeBuilder<L> {
     /// Create a new builder
     pub fn new() -> Self {
         Self {
@@ -654,7 +654,7 @@ impl<L: LlmProvider> AgentRuntimeBuilder<L> {
     }
 }
 
-impl<L: LlmProvider> Default for AgentRuntimeBuilder<L> {
+impl<L: LlmProvider + ?Sized> Default for AgentRuntimeBuilder<L> {
     fn default() -> Self {
         Self::new()
     }

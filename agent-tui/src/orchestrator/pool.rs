@@ -11,7 +11,7 @@ use anyhow::{anyhow, Result};
 
 use crate::{
     agent::{AgentHandle, AgentInstance, AgentRuntimeBuilder, AgentEvent},
-    llm::LlmClient,
+    llm::LlmProvider,
     shared::SharedMemory,
     types::{Agent, AgentState, Id},
 };
@@ -23,7 +23,7 @@ pub struct AgentPool {
     /// Currently running agent instances
     agents: Arc<RwLock<HashMap<Id, AgentInstance>>>,
     /// LLM client for agents
-    llm_client: Arc<LlmClient>,
+    llm_client: Arc<dyn LlmProvider>,
     /// Shared memory for agents
     shared_memory: Arc<SharedMemory>,
     /// Event sender for agent events
@@ -34,7 +34,7 @@ impl AgentPool {
     /// Create a new agent pool
     pub fn new(
         max_concurrent: usize,
-        llm_client: Arc<LlmClient>,
+        llm_client: Arc<dyn LlmProvider>,
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Self {
@@ -213,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_new() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -226,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_capacity() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(2, llm_client, shared_memory, event_tx);
@@ -238,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_list_agents() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -250,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_get_nonexistent_agent() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -262,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_get_state_nonexistent() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -274,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_shutdown_nonexistent() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_cleanup_empty() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -298,7 +298,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_is_running() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
@@ -309,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_pool_shutdown_all_empty() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);

@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     agent::{AgentEvent, AgentRegistry},
-    llm::{LlmClient, LlmProvider},
+    llm::LlmProvider,
     shared::SharedMemory,
     types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType, Plan, Subtask, ExecutionContext},
 };
@@ -32,9 +32,9 @@ impl Router {
     }
 
     /// Analyze a task and determine routing using LLM
-    pub async fn analyze(
+    pub async fn analyze<L: LlmProvider + ?Sized>(
         &self,
-        llm_client: Arc<LlmClient>,
+        llm_client: Arc<L>,
         registry: &AgentRegistry,
         task: &Task,
         session: &Session,
@@ -147,11 +147,11 @@ impl Default for Router {
 
 /// Task planner for decomposition
 pub struct Planner {
-    llm_client: Option<Arc<LlmClient>>,
+    llm_client: Option<Arc<dyn LlmProvider>>,
 }
 
 impl Planner {
-    pub fn new(llm_client: Option<Arc<LlmClient>>) -> Self {
+    pub fn new(llm_client: Option<Arc<dyn LlmProvider>>) -> Self {
         Self { llm_client }
     }
 
@@ -369,7 +369,7 @@ pub struct Executor {
 impl Executor {
     /// Create a new executor
     pub fn new(
-        llm_client: Arc<LlmClient>,
+        llm_client: Arc<dyn LlmProvider>,
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
@@ -486,7 +486,7 @@ impl Executor {
 /// Orchestrator that coordinates routing, planning, and execution
 pub struct Orchestrator {
     /// LLM client for routing and planning
-    llm_client: Arc<LlmClient>,
+    llm_client: Arc<dyn LlmProvider>,
     /// Agent registry
     registry: Arc<RwLock<AgentRegistry>>,
     /// Shared memory for agents
@@ -502,7 +502,7 @@ pub struct Orchestrator {
 impl Orchestrator {
     /// Create a new orchestrator
     pub fn new(
-        llm_client: Arc<LlmClient>,
+        llm_client: Arc<dyn LlmProvider>,
         registry: Arc<RwLock<AgentRegistry>>,
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
@@ -650,8 +650,8 @@ impl Orchestrator {
             router: Router::new(),
             planner: Planner::new(Some(self.llm_client.clone())),
             executor: Executor::new(
-                self.llm_client.clone(), 
-                self.shared_memory.clone(), 
+                self.llm_client.clone(),
+                self.shared_memory.clone(),
                 self.executor.pool.event_tx.clone(),
                 self.executor.pool.max_concurrent
             ),
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_planner_new_with_llm() {
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let planner = Planner::new(Some(llm_client));
         let _ = planner;
     }
@@ -912,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_planner_plan_with_llm_calls_api() {
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let planner = Planner::new(Some(llm_client));
         let task = Task::new("Write a hello world function", TaskType::CodeGeneration);
         let session = Session::new("Test Session");
@@ -988,7 +988,7 @@ mod tests {
     #[tokio::test]
     async fn test_executor_new() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let executor = Executor::new(llm_client, shared_memory, event_tx, 5);
@@ -1001,7 +1001,7 @@ mod tests {
     #[tokio::test]
     async fn test_executor_is_at_capacity() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
         let executor = Executor::new(llm_client, shared_memory, event_tx, 2);
@@ -1014,7 +1014,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_new() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
         
@@ -1026,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_execute_auto_no_agents() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
 
@@ -1045,7 +1045,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_execute_chat_streaming() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let mut registry = AgentRegistry::new();
 
         // Register a test agent
