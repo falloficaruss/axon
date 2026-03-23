@@ -346,12 +346,7 @@ impl App {
                             self.sidebar.next_session(self.sessions.len());
                         }
                         KeyCode::Char('l') => {
-                            // Load selected session from sidebar
-                            let idx = self.sidebar.selected_session();
-                            if idx < self.sessions.len() {
-                                let session_id = self.sessions[idx].id.clone();
-                                self.load_session(&session_id).await;
-                            }
+                            self.load_selected_session().await;
                         }
                         _ => {}
                     }
@@ -500,15 +495,11 @@ impl App {
                 KeyCode::Char('r') => {
                     self.refresh_session_list().await;
                     info!("Manual sidebar refresh");
-                }
                 KeyCode::Char('l') | KeyCode::Enter => {
-                    // Load selected session from sidebar
-                    let idx = self.sidebar.selected_session();
-                    if idx < self.sessions.len() {
-                        let session_id = self.sessions[idx].id.clone();
-                        self.load_session(&session_id).await;
-                        self.mode = AppMode::Normal;
-                    }
+                    self.load_selected_session().await;
+                    self.mode = AppMode::Normal;
+                }
+
                 }
                 _ => {}
             },
@@ -698,6 +689,15 @@ impl App {
                 self.add_system_message(&format!("Failed to load session: {}", e));
                 error!("Failed to load session {}: {}", session_id, e);
             }
+        }
+    }
+
+    /// Load the session currently selected in the sidebar
+    async fn load_selected_session(&mut self) {
+        let idx = self.sidebar.selected_session();
+        if idx < self.sessions.len() {
+            let session_id = self.sessions[idx].id.clone();
+            self.load_session(&session_id).await;
         }
     }
 
