@@ -1,5 +1,8 @@
 pub mod components;
 pub mod markdown;
+pub mod session_manager;
+pub mod command_handler;
+pub mod popups;
 
 use anyhow::Result;
 use crossterm::{
@@ -10,16 +13,11 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Modifier},
-    text::Line,
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    style::Style,
     Frame, Terminal,
 };
-use std::{
-    collections::HashMap,
-    io,
-    time::{Duration, Instant},
-};
+use std::io;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -31,12 +29,13 @@ use crate::{
     config::Config,
     llm::LlmClient,
     orchestrator::Orchestrator,
-    types::{AppEvent, Message, MessageRole, Session, SessionMode, Agent, Task, TaskType},
+    types::{AppEvent, Message, MessageRole, SessionMode, Agent, Task, TaskType},
 };
 
 use self::components::{Chat, Input, Sidebar};
-use crate::persistence::{SessionStore, MemoryStore, SessionMetadata};
 use crate::shared::SharedMemory;
+
+pub use self::session_manager::SessionManager;
 
 /// Represents a pending confirmation request
 pub struct PendingConfirmation {
@@ -50,10 +49,8 @@ pub struct PendingConfirmation {
 pub struct App {
     /// Application configuration
     config: Config,
-    /// Current session
-    session: Session,
-    /// Saved sessions metadata
-    sessions: Vec<SessionMetadata>,
+    /// Session manager (handles session state and persistence)
+    pub session_manager: SessionManager,
     /// Chat component
     chat: Chat,
     /// Input component
@@ -70,19 +67,15 @@ pub struct App {
     /// Shared memory for agents (used by orchestrator; retained for direct-access use cases)
     #[allow(dead_code)]
     shared_memory: Arc<SharedMemory>,
-    /// Session store for persistence
-    session_store: Arc<SessionStore>,
-    /// Memory store for persistence
-    memory_store: Arc<MemoryStore>,
     /// Active agent for manual mode
-    active_agent: Option<Agent>,
+    pub active_agent: Option<Agent>,
     /// Agent event receiver
     agent_event_rx: mpsc::Receiver<AgentEvent>,
     /// Agent event sender (cloned into orchestrator; retained for future direct use)
     #[allow(dead_code)]
     agent_event_tx: mpsc::Sender<AgentEvent>,
     /// Whether the app should quit
-    should_quit: bool,
+    pub should_quit: bool,
     /// Show sidebar
     show_sidebar: bool,
     /// Current mode
@@ -93,22 +86,12 @@ pub struct App {
     event_tx: mpsc::Sender<AppEvent>,
     /// Tick rate
     tick_rate: Duration,
-    /// Last auto-save time
-    last_save: Instant,
-    /// Last session list refresh time
-    last_session_refresh: Instant,
-    /// Memory keys for memory manager
-    memory_keys: Vec<String>,
-    /// Selected memory key index
-    selected_memory_key: usize,
     /// Handle to the currently running task (for cancellation)
     current_task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Cached agent list for UI rendering
     cached_agents: Vec<Agent>,
     /// Selected agent index for agent selector (separate from sidebar)
     agent_selected_index: usize,
-    /// Cached memory values for memory manager
-    cached_memory_values: HashMap<String, String>,
     /// Pending confirmation request
     pending_confirmation: Option<PendingConfirmation>,
 }
@@ -136,8 +119,6 @@ impl App {
     pub fn new(config: Config) -> Result<Self> {
         let (event_tx, event_rx) = mpsc::channel(100);
         let (agent_event_tx, agent_event_rx) = mpsc::channel(100);
-        
-        let session = Session::new("New Session");
         
         // Initialize LLM client if API key is available
         let llm_client = if config.llm.api_key.starts_with("$") {
@@ -173,14 +154,10 @@ impl App {
         crate::agent::agents::initialize_default_agents(&mut agent_registry);
         
         // Initialize persistence stores
-        let session_store = Arc::new(SessionStore::new(config.session_dir()));
-        let memory_store = Arc::new(MemoryStore::new(config.memory_dir()));
+        let session_manager = SessionManager::new(&config);
         
         // Initialize shared memory
         let shared_memory = Arc::new(SharedMemory::new());
-        
-        // Initialize session list (empty for now, will be loaded on tick or first draw)
-        let sessions = Vec::new();
         
         // Set default active agent to coder for manual mode
         let active_agent = agent_registry.get("coder").cloned();
@@ -200,8 +177,7 @@ impl App {
         
         Ok(Self {
             config: config.clone(),
-            session: session.clone(),
-            sessions,
+            session_manager,
             chat: Chat::new(),
             input: Input::new(),
             sidebar: Sidebar::new(),
@@ -209,8 +185,6 @@ impl App {
             orchestrator,
             agent_registry,
             shared_memory,
-            session_store,
-            memory_store,
             active_agent,
             agent_event_rx,
             agent_event_tx,
@@ -220,14 +194,9 @@ impl App {
             event_rx,
             event_tx,
             tick_rate: Duration::from_millis(250),
-            last_save: Instant::now(),
-            last_session_refresh: Instant::now(),
-            memory_keys: Vec::new(),
-            selected_memory_key: 0,
             current_task_handle: None,
             cached_agents: Vec::new(),
             agent_selected_index: 0,
-            cached_memory_values: HashMap::new(),
             pending_confirmation: None,
         })
     }
@@ -343,10 +312,25 @@ impl App {
                             self.sidebar.previous_session();
                         }
                         KeyCode::Char('n') => {
-                            self.sidebar.next_session(self.sessions.len());
+                            self.sidebar.next_session(self.session_manager.sessions.len());
                         }
                         KeyCode::Char('l') => {
-                            self.load_selected_session().await;
+                            let idx = self.sidebar.selected_session();
+                            if idx < self.session_manager.sessions.len() {
+                                let session_id = self.session_manager.sessions[idx].id.clone();
+                                match self.session_manager.load_session(&session_id).await {
+                                    Ok(title) => {
+                                        self.chat.clear();
+                                        for msg in &self.session_manager.session.messages {
+                                            self.chat.add_message(msg.clone());
+                                        }
+                                        self.add_system_message(&format!("Session '{}' loaded.", title));
+                                    }
+                                    Err(e) => {
+                                        self.add_system_message(&format!("Failed to load session: {}", e));
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -443,38 +427,38 @@ impl App {
                     self.mode = AppMode::Normal;
                 }
                 KeyCode::Up | KeyCode::Char('p') => {
-                    if self.selected_memory_key > 0 {
-                        self.selected_memory_key -= 1;
+                    if self.session_manager.selected_memory_key > 0 {
+                        self.session_manager.selected_memory_key -= 1;
                     }
                 }
                 KeyCode::Down | KeyCode::Char('n') => {
-                    if self.selected_memory_key < self.memory_keys.len().saturating_sub(1) {
-                        self.selected_memory_key += 1;
+                    if self.session_manager.selected_memory_key < self.session_manager.memory_keys.len().saturating_sub(1) {
+                        self.session_manager.selected_memory_key += 1;
                     }
                 }
                 KeyCode::Char('r') => {
-                    if let Ok(keys) = self.memory_store.list("session").await {
-                        self.memory_keys = keys;
+                    if let Ok(keys) = self.session_manager.memory_store.list("session").await {
+                        self.session_manager.memory_keys = keys;
                         info!("Manual memory refresh");
                     }
                 }
                 KeyCode::Enter => {
-                    if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
-                        match self.memory_store.get(key, "session").await {
+                    if let Some(key) = self.session_manager.memory_keys.get(self.session_manager.selected_memory_key) {
+                        match self.session_manager.memory_store.get(key, "session").await {
                             Ok(Some(value)) => {
-                                self.cached_memory_values.insert(key.clone(), value.clone());
+                                self.session_manager.cached_memory_values.insert(key.clone(), value.clone());
                                 let msg = Message::system(&format!("Memory [{}]: {}", key, value));
-                                self.session.add_message(msg.clone());
+                                self.session_manager.session.add_message(msg.clone());
                                 self.chat.add_message(msg);
                             }
                             Ok(None) => {
                                 let msg = Message::system(&format!("Key '{}' not found in memory.", key));
-                                self.session.add_message(msg.clone());
+                                self.session_manager.session.add_message(msg.clone());
                                 self.chat.add_message(msg);
                             }
                             Err(e) => {
                                 let msg = Message::system(&format!("Failed to recall memory: {}", e));
-                                self.session.add_message(msg.clone());
+                                self.session_manager.session.add_message(msg.clone());
                                 self.chat.add_message(msg);
                             }
                         }
@@ -490,16 +474,30 @@ impl App {
                     self.sidebar.previous_session();
                 }
                 KeyCode::Char('n') | KeyCode::Down => {
-                    self.sidebar.next_session(self.sessions.len());
+                    self.sidebar.next_session(self.session_manager.sessions.len());
                 }
                 KeyCode::Char('r') => {
-                    self.refresh_session_list().await;
+                    self.session_manager.refresh_session_list().await;
                     info!("Manual sidebar refresh");
-                KeyCode::Char('l') | KeyCode::Enter => {
-                    self.load_selected_session().await;
-                    self.mode = AppMode::Normal;
                 }
-
+                KeyCode::Char('l') | KeyCode::Enter => {
+                    let idx = self.sidebar.selected_session();
+                    if idx < self.session_manager.sessions.len() {
+                        let session_id = self.session_manager.sessions[idx].id.clone();
+                        match self.session_manager.load_session(&session_id).await {
+                            Ok(title) => {
+                                self.chat.clear();
+                                for msg in &self.session_manager.session.messages {
+                                    self.chat.add_message(msg.clone());
+                                }
+                                self.add_system_message(&format!("Session '{}' loaded.", title));
+                            }
+                            Err(e) => {
+                                self.add_system_message(&format!("Failed to load session: {}", e));
+                            }
+                        }
+                    }
+                    self.mode = AppMode::Normal;
                 }
                 _ => {}
             },
@@ -528,22 +526,22 @@ impl App {
     async fn handle_app_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::MessageReceived(msg) => {
-                self.session.add_message(msg.clone());
+                self.session_manager.session.add_message(msg.clone());
                 self.chat.add_message(msg);
             }
             AppEvent::MessageUpdate { agent_id, content } => {
-                if let Some(last_message) = self.session.messages.last_mut() {
+                if let Some(last_message) = self.session_manager.session.messages.last_mut() {
                     if last_message.role == MessageRole::Agent && last_message.agent_id.as_deref() == Some(agent_id.as_str()) {
                         last_message.content.push_str(&content);
                     } else {
                         // Last message is not from the same agent, create a new one
                         let msg = Message::agent(&content, &agent_id);
-                        self.session.add_message(msg);
+                        self.session_manager.session.add_message(msg);
                     }
                 } else {
                     // No messages yet, create a new one
                     let msg = Message::agent(&content, &agent_id);
-                    self.session.add_message(msg);
+                    self.session_manager.session.add_message(msg);
                 }
             }
             AppEvent::TaskStatusChanged(task_id, status) => {
@@ -592,12 +590,12 @@ impl App {
                 self.chat.set_streaming(false);
                 if result.success {
                     let msg = Message::agent(&result.output, &agent_id);
-                    self.session.add_message(msg.clone());
+                    self.session_manager.session.add_message(msg.clone());
                     self.chat.add_message(msg);
                 } else {
                     let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
                     let msg = Message::system(&format!("Agent {} failed: {}", agent_id, error_msg));
-                    self.session.add_message(msg.clone());
+                    self.session_manager.session.add_message(msg.clone());
                     self.chat.add_message(msg);
                 }
             }
@@ -608,7 +606,7 @@ impl App {
                 self.chat.set_streaming(false);
                 error!("Agent {} error: {}", agent_id, error);
                 let msg = Message::system(&format!("Agent {} error: {}", agent_id, error));
-                self.session.add_message(msg.clone());
+                self.session_manager.session.add_message(msg.clone());
                 self.chat.add_message(msg);
             }
             AgentEvent::StateChanged { agent_id, state } => {
@@ -631,10 +629,8 @@ impl App {
 
     /// Handle tick event
     async fn on_tick(&mut self) -> Result<()> {
-        // Update session list periodically (every 10 seconds, not every tick)
-        if self.last_session_refresh.elapsed() >= Duration::from_secs(10) {
-            self.refresh_session_list().await;
-        }
+        // Update session list and handle auto-save via SessionManager
+        let _ = self.session_manager.on_tick(Duration::from_secs(self.config.persistence.auto_save_interval)).await;
 
         // Update cached agent list
         {
@@ -644,61 +640,13 @@ impl App {
 
         // Fetch memory keys if in MemoryManager mode
         if self.mode == AppMode::MemoryManager {
-            if let Ok(keys) = self.memory_store.list("session").await {
-                self.memory_keys = keys;
-            }
+            let _ = self.session_manager.refresh_memory_keys().await;
         }
 
-        // Handle auto-save
-        let auto_save_interval = Duration::from_secs(self.config.persistence.auto_save_interval);
-        if self.last_save.elapsed() >= auto_save_interval {
-            if !self.session.messages.is_empty() {
-                debug!("Auto-saving session...");
-                if let Err(e) = self.session_store.save(&self.session).await {
-                    error!("Failed to auto-save session: {}", e);
-                }
-            }
-            self.last_save = Instant::now();
-        }
+        // Update sidebar refresh timestamp
+        self.sidebar.set_last_refresh(chrono::Local::now());
 
         Ok(())
-    }
-
-    /// Refresh the session list from disk
-    async fn refresh_session_list(&mut self) {
-        if let Ok(sessions) = self.session_store.list().await {
-            self.sessions = sessions;
-            self.sidebar.set_last_refresh(chrono::Local::now());
-        }
-        self.last_session_refresh = Instant::now();
-    }
-
-    /// Load a session by ID, replacing the current session
-    async fn load_session(&mut self, session_id: &str) {
-        match self.session_store.load(session_id).await {
-            Ok(session) => {
-                self.session = session;
-                self.chat.clear();
-                for msg in &self.session.messages {
-                    self.chat.add_message(msg.clone());
-                }
-                self.add_system_message(&format!("Session '{}' loaded.", self.session.title));
-                info!("Loaded session {}", session_id);
-            }
-            Err(e) => {
-                self.add_system_message(&format!("Failed to load session: {}", e));
-                error!("Failed to load session {}: {}", session_id, e);
-            }
-        }
-    }
-
-    /// Load the session currently selected in the sidebar
-    async fn load_selected_session(&mut self) {
-        let idx = self.sidebar.selected_session();
-        if idx < self.sessions.len() {
-            let session_id = self.sessions[idx].id.clone();
-            self.load_session(&session_id).await;
-        }
     }
 
     /// Select an agent by index from the cached agents list
@@ -713,7 +661,7 @@ impl App {
     /// Helper: add a system message to both session and chat
     fn add_system_message(&mut self, text: &str) {
         let msg = Message::system(text);
-        self.session.add_message(msg.clone());
+        self.session_manager.session.add_message(msg.clone());
         self.chat.add_message(msg);
     }
 
@@ -727,14 +675,14 @@ impl App {
         // Check if a task is already running
         if self.current_task_handle.is_some() {
             let error_msg = Message::system("A task is already running. Use /cancel or press Ctrl+X to cancel it first.");
-            self.session.add_message(error_msg.clone());
+            self.session_manager.session.add_message(error_msg.clone());
             self.chat.add_message(error_msg);
             return Ok(());
         }
 
         // Add user message
         let msg = Message::user(&content);
-        self.session.add_message(msg.clone());
+        self.session_manager.session.add_message(msg.clone());
         self.chat.add_message(msg);
 
         // Clear input
@@ -744,7 +692,7 @@ impl App {
         if let Some(orchestrator) = &self.orchestrator {
             // Get message history for context (last 10 messages)
             let history: Vec<Message> = self
-                .session
+                .session_manager.session
                 .messages
                 .iter()
                 .rev()
@@ -753,11 +701,11 @@ impl App {
                 .cloned()
                 .collect();
 
-            let session_clone = self.session.clone();
+            let session_clone = self.session_manager.session.clone();
             let event_tx = self.event_tx.clone();
             let orchestrator = orchestrator.clone();
 
-            match self.session.mode {
+            match self.session_manager.session.mode {
                 SessionMode::Manual => {
                     // Use the currently selected agent
                     if let Some(agent) = &self.active_agent {
@@ -766,7 +714,7 @@ impl App {
 
                         // Show that we're processing
                         let processing_msg = Message::system(&format!("Agent '{}' is processing...", agent_name));
-                        self.session.add_message(processing_msg.clone());
+                        self.session_manager.session.add_message(processing_msg.clone());
                         self.chat.add_message(processing_msg);
 
                         // Spawn the agent execution in a background task
@@ -782,14 +730,14 @@ impl App {
                         self.current_task_handle = Some(handle);
                     } else {
                         let error_msg = Message::system("No agent selected. Use /agent <name> to select an agent.");
-                        self.session.add_message(error_msg.clone());
+                        self.session_manager.session.add_message(error_msg.clone());
                         self.chat.add_message(error_msg);
                     }
                 }
                 SessionMode::Auto => {
                     // Show that we're routing
                     let routing_msg = Message::system("Analyzing task and routing to appropriate agent...");
-                    self.session.add_message(routing_msg.clone());
+                    self.session_manager.session.add_message(routing_msg.clone());
                     self.chat.add_message(routing_msg);
 
                     // Create a task
@@ -822,7 +770,7 @@ impl App {
             let response = Message::system(
                 "No LLM client configured. Please set OPENAI_API_KEY environment variable or configure api_key in ~/.config/agent-tui/config.toml"
             );
-            self.session.add_message(response.clone());
+            self.session_manager.session.add_message(response.clone());
             self.chat.add_message(response);
         }
 
@@ -834,7 +782,7 @@ impl App {
         if let Some(handle) = self.current_task_handle.take() {
             handle.abort();
             let msg = Message::system("Task cancelled by user.");
-            self.session.add_message(msg.clone());
+            self.session_manager.session.add_message(msg.clone());
             self.chat.add_message(msg);
             
             // Shutdown any running agents in the orchestrator
@@ -845,7 +793,7 @@ impl App {
             info!("Cancelled running task");
         } else {
             let msg = Message::system("No task is currently running.");
-            self.session.add_message(msg.clone());
+            self.session_manager.session.add_message(msg.clone());
             self.chat.add_message(msg);
         }
         Ok(())
@@ -853,309 +801,14 @@ impl App {
 
     /// Execute a slash command
     async fn execute_command(&mut self) -> Result<()> {
-        let raw_content = self.input.get_content();
-        // Prepend "/" because command mode entry consumes the slash character
-        let content = if raw_content.starts_with('/') {
-            raw_content
-        } else {
-            format!("/{}", raw_content)
-        };
-        let parts: Vec<&str> = content.split_whitespace().collect();
-        
-        if parts.is_empty() {
-            return Ok(());
-        }
-
-        let command = parts[0];
-        let args = &parts[1..];
-
-        match command {
-            "/help" | "help" => {
-                let help_text = r#"Available commands:
-/help - Show this help message
-/mode auto - Enable automatic agent routing
-/mode manual - Enable manual agent selection
-/agent <name> - Select specific agent (manual mode)
-/agents - List all available agents
-/clear - Clear current session
-/new - Start a new session
-/save <name> - Save current session to file
-/load <id> - Load a session by ID
-/sessions - List all saved sessions
-/delete <id> - Delete a session by ID
-/remember <key> <value> - Store a value in session memory
-/recall <key> - Retrieve a value from session memory
-/forget <key> - Delete a value from session memory
-/cancel - Cancel the currently running task
-/quit - Exit application"#;
-                let msg = Message::system(help_text);
-                self.session.add_message(msg.clone());
-                self.chat.add_message(msg);
-            }
-            "/mode" => {
-                if let Some(mode) = args.first() {
-                    match *mode {
-                        "auto" => {
-                            self.session.set_mode(SessionMode::Auto);
-                            let msg = Message::system("Switched to AUTO mode. Agents will be selected automatically.");
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        "manual" => {
-                            self.session.set_mode(SessionMode::Manual);
-                            let msg = Message::system("Switched to MANUAL mode. Use /agent <name> to select an agent.");
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        _ => {
-                            let msg = Message::system(&format!("Unknown mode: {}. Use 'auto' or 'manual'.", mode));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
-                }
-            }
-            "/agent" => {
-                if let Some(agent_name) = args.first() {
-                    let registry = self.agent_registry.read().await;
-                    let agent_opt = registry.get(agent_name).cloned();
-                    let available: Vec<String> = registry.list()
-                        .iter()
-                        .map(|a| a.name.clone())
-                        .collect();
-                    drop(registry);
-
-                    if let Some(agent) = agent_opt {
-                        self.active_agent = Some(agent.clone());
-                        let msg = Message::system(&format!("Selected agent: {} ({})", agent_name, agent.role.as_str()));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    } else {
-                        let msg = Message::system(&format!(
-                            "Unknown agent: {}. Available agents: {}",
-                            agent_name,
-                            available.join(", ")
-                        ));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
-                } else {
-                    // Show current agent or list available
-                    if let Some(agent) = &self.active_agent {
-                        let msg = Message::system(&format!(
-                            "Current agent: {} ({})",
-                            agent.name,
-                            agent.role.as_str()
-                        ));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    } else {
-                        let registry = self.agent_registry.read().await;
-                        let available: Vec<String> = registry.list()
-                            .iter()
-                            .map(|a| format!("{} ({})", a.name, a.role.as_str()))
-                            .collect();
-                        drop(registry);
-                        let msg = Message::system(&format!(
-                            "No agent selected. Available agents: {}",
-                            available.join(", ")
-                        ));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
-                }
-            }
-            "/agents" => {
-                let registry = self.agent_registry.read().await;
-                let agents: Vec<String> = registry.list()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| {
-                        let status = if self.active_agent.as_ref().map(|active| active.id == a.id).unwrap_or(false) {
-                            " [ACTIVE]"
-                        } else {
-                            ""
-                        };
-                        format!("{}. {} ({}){}", i + 1, a.name, a.role.as_str(), status)
-                    })
-                    .collect();
-                drop(registry);
-                let msg = Message::system(&format!("Available agents:\n{}", agents.join("\n")));
-                self.session.add_message(msg.clone());
-                self.chat.add_message(msg);
-            }
-            "/clear" => {
-                self.session.messages.clear();
-                self.chat.clear();
-                let msg = Message::system("Session cleared.");
-                self.session.add_message(msg.clone());
-                self.chat.add_message(msg);
-            }
-            "/new" => {
-                self.session = Session::new("New Session");
-                self.chat.clear();
-                let registry = self.agent_registry.read().await;
-                self.active_agent = registry.get("coder").cloned();
-                drop(registry);
-                let msg = Message::system("Started new session.");
-                self.session.add_message(msg.clone());
-                self.chat.add_message(msg);
-            }
-            "/save" => {
-                if !args.is_empty() {
-                    self.session.title = args.join(" ");
-                }
-                match self.session_store.save(&self.session).await {
-                    Ok(_) => {
-                        let msg = Message::system(&format!("Session '{}' saved successfully (ID: {}).", self.session.title, self.session.id));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
-                    Err(e) => {
-                        let msg = Message::system(&format!("Failed to save session: {}", e));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
-                }
-            }
-            "/load" => {
-                if let Some(id) = args.first() {
-                    self.load_session(id).await;
-                } else {
-                    self.add_system_message("Usage: /load <session_id>");
-                }
-            }
-            "/sessions" => {
-                match self.session_store.list().await {
-                    Ok(sessions) => {
-                        if sessions.is_empty() {
-                            let msg = Message::system("No saved sessions found.");
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        } else {
-                            let mut list = String::from("Saved sessions:\n");
-                            for s in sessions {
-                                list.push_str(&format!("- {}: {} ({} messages, {})\n", 
-                                    s.id, s.title, s.message_count, s.updated_at.format("%Y-%m-%d %H:%M:%S")));
-                            }
-                            let msg = Message::system(&list);
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
-                    Err(e) => {
-                        let msg = Message::system(&format!("Failed to list sessions: {}", e));
-                        self.session.add_message(msg.clone());
-                        self.chat.add_message(msg);
-                    }
-                }
-            }
-            "/delete" => {
-                if let Some(id) = args.first() {
-                    match self.session_store.delete(id).await {
-                        Ok(_) => {
-                            let msg = Message::system(&format!("Session '{}' deleted successfully.", id));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        Err(e) => {
-                            let msg = Message::system(&format!("Failed to delete session: {}", e));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
-                } else {
-                    let msg = Message::system("Usage: /delete <session_id>");
-                    self.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
-                }
-            }
-            "/remember" => {
-                if args.len() >= 2 {
-                    let key = args[0];
-                    let value = args[1..].join(" ");
-                    match self.memory_store.set(key, &value, "session").await {
-                        Ok(_) => {
-                            let msg = Message::system(&format!("Stored in memory: {} = {}", key, value));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        Err(e) => {
-                            let msg = Message::system(&format!("Failed to store memory: {}", e));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
-                } else {
-                    let msg = Message::system("Usage: /remember <key> <value>");
-                    self.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
-                }
-            }
-            "/recall" => {
-                if let Some(key) = args.first() {
-                    match self.memory_store.get(key, "session").await {
-                        Ok(Some(value)) => {
-                            let msg = Message::system(&format!("Memory recall: {} = {}", key, value));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        Ok(None) => {
-                            let msg = Message::system(&format!("Key '{}' not found in memory.", key));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        Err(e) => {
-                            let msg = Message::system(&format!("Failed to recall memory: {}", e));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
-                } else {
-                    let msg = Message::system("Usage: /recall <key>");
-                    self.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
-                }
-            }
-            "/forget" => {
-                if let Some(key) = args.first() {
-                    match self.memory_store.delete(key, "session").await {
-                        Ok(_) => {
-                            let msg = Message::system(&format!("Forgotten: {}", key));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                        Err(e) => {
-                            let msg = Message::system(&format!("Failed to forget memory: {}", e));
-                            self.session.add_message(msg.clone());
-                            self.chat.add_message(msg);
-                        }
-                    }
-                } else {
-                    let msg = Message::system("Usage: /forget <key>");
-                    self.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
-                }
-            }
-            "/cancel" => {
-                self.cancel_current_task().await?;
-            }
-            "/quit" | "/exit" => {
-                self.should_quit = true;
-            }
-            _ => {
-                let msg = Message::system(&format!("Unknown command: {}. Type /help for available commands.", command));
-                self.session.add_message(msg.clone());
-                self.chat.add_message(msg);
-            }
-        }
-
-        self.input.clear();
-        Ok(())
+        use self::command_handler::CommandHandler;
+        CommandHandler::execute(self).await
     }
 
     /// Draw the UI
     fn draw(&mut self, frame: &mut Frame) {
+        use self::popups::PopupRenderer;
+
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(if self.show_sidebar {
@@ -1169,7 +822,7 @@ impl App {
         if self.show_sidebar {
             let agents: Vec<_> = self.cached_agents.clone();
             self.sidebar.focused = self.mode == AppMode::Sidebar;
-            self.sidebar.draw(frame, main_layout[0], &self.session, &agents, self.active_agent.as_ref(), &self.sessions);
+            self.sidebar.draw(frame, main_layout[0], &self.session_manager.session, &agents, self.active_agent.as_ref(), &self.session_manager.sessions);
         }
 
         // Main content area
@@ -1179,7 +832,7 @@ impl App {
             .split(main_layout[1]);
 
         // Chat area
-        self.chat.draw(frame, content_layout[0], &self.session);
+        self.chat.draw(frame, content_layout[0], &self.session_manager.session);
 
         // Input area
         self.input.draw(frame, content_layout[1], self.mode);
@@ -1187,224 +840,49 @@ impl App {
         // Draw overlays based on mode
         match self.mode {
             AppMode::AgentSelect => {
-                self.draw_agent_selector(frame);
+                PopupRenderer::draw_agent_selector(frame, &self.cached_agents, self.agent_selected_index);
             }
             AppMode::MemoryManager => {
-                self.draw_memory_manager(frame);
+                PopupRenderer::draw_memory_manager(
+                    frame,
+                    &self.session_manager.memory_keys,
+                    self.session_manager.selected_memory_key,
+                    &self.session_manager.cached_memory_values,
+                );
             }
             AppMode::Confirm => {
-                self.draw_confirmation_dialog(frame);
+                PopupRenderer::draw_confirmation_dialog(frame, self.pending_confirmation.as_ref());
             }
             _ => {}
         }
 
         // Status bar
-        self.draw_status_bar(frame);
+        PopupRenderer::draw_status_bar(frame, &self.session_manager.session);
     }
 
     /// Draw agent selector popup
-    fn draw_agent_selector(&self, frame: &mut Frame) {
-        let area = Self::centered_rect(60, 60, frame.area());
-
-        let block = Block::default()
-            .title("Select Agent")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        // Build dynamic agent list from registry
-        let mut text: Vec<Line> = vec![
-            Line::from("Available agents:"),
-            Line::from(""),
-        ];
-
-        for (idx, agent) in self.cached_agents.iter().enumerate() {
-            let mut style = Style::default();
-            if idx == self.agent_selected_index {
-                style = style.bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD);
-            }
-            
-            let line = Line::from(vec![
-                ratatui::text::Span::styled(format!("{}. ", idx + 1), style),
-                ratatui::text::Span::styled(&agent.name, style),
-                ratatui::text::Span::raw(" - "),
-                ratatui::text::Span::raw(&agent.description),
-            ]);
-            text.push(line);
-        }
-
-        text.push(Line::from(""));
-        text.push(Line::from("Press number to select, ESC to cancel"));
-
-        let paragraph = Paragraph::new(text)
-            .block(block)
-            .wrap(Wrap { trim: true });
-
-        frame.render_widget(Clear, area);
-        frame.render_widget(paragraph, area);
+    fn draw_agent_selector(&self, _frame: &mut Frame) {
+        // Now delegated to PopupRenderer
     }
 
     /// Draw confirmation dialog popup
-    fn draw_confirmation_dialog(&self, frame: &mut Frame) {
-        let area = Self::centered_rect(70, 70, frame.area());
-        
-        let block = Block::default()
-            .title(self.pending_confirmation.as_ref().map(|p| p.title.as_str()).unwrap_or("Confirmation"))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
-
-        let mut text = Vec::new();
-        
-        if let Some(pending) = &self.pending_confirmation {
-            text.push(Line::from(pending.message.clone()));
-            text.push(Line::from(""));
-            text.push(Line::from(format!("Files ({}):", pending.changes.len())));
-            
-            for change in &pending.changes {
-                let op_str = match change.operation {
-                    crate::agent::agents::coder::FileOperation::Create => " [CREATE] ",
-                    crate::agent::agents::coder::FileOperation::Update => " [UPDATE] ",
-                    crate::agent::agents::coder::FileOperation::Delete => " [DELETE] ",
-                };
-                
-                let op_color = match change.operation {
-                    crate::agent::agents::coder::FileOperation::Create => Color::Green,
-                    crate::agent::agents::coder::FileOperation::Update => Color::Yellow,
-                    crate::agent::agents::coder::FileOperation::Delete => Color::Red,
-                };
-
-                let line = Line::from(vec![
-                    ratatui::text::Span::styled(op_str, Style::default().fg(op_color).add_modifier(Modifier::BOLD)),
-                    ratatui::text::Span::raw(change.file_path.to_string_lossy().to_string()),
-                ]);
-                text.push(line);
-            }
-        } else {
-            text.push(Line::from("No pending confirmation."));
-        }
-
-        text.push(Line::from(""));
-        text.push(Line::from(vec![
-            ratatui::text::Span::raw("Press "),
-            ratatui::text::Span::styled("y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            ratatui::text::Span::raw(" to accept, "),
-            ratatui::text::Span::styled("n", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            ratatui::text::Span::raw(" to reject."),
-        ]));
-
-        let paragraph = Paragraph::new(text)
-            .block(block)
-            .wrap(Wrap { trim: true });
-
-        frame.render_widget(Clear, area);
-        frame.render_widget(paragraph, area);
+    fn draw_confirmation_dialog(&self, _frame: &mut Frame) {
+        // Now delegated to PopupRenderer
     }
 
     /// Draw memory manager popup
-    fn draw_memory_manager(&self, frame: &mut Frame) {
-        let area = Self::centered_rect(80, 80, frame.area());
-        
-        let block = Block::default()
-            .title("Memory Manager")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
-
-        if self.memory_keys.is_empty() {
-            let text = vec![
-                Line::from("No memory entries found."),
-                Line::from(""),
-                Line::from("Press ESC or 'q' to close, 'r' to refresh"),
-            ];
-
-            let paragraph = Paragraph::new(text)
-                .block(block)
-                .wrap(Wrap { trim: true });
-
-            frame.render_widget(Clear, area);
-            frame.render_widget(paragraph, area);
-        } else {
-            let list_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .split(area);
-
-            let items: Vec<ListItem> = self.memory_keys
-                .iter()
-                .enumerate()
-                .map(|(i, key)| {
-                    let style = if i == self.selected_memory_key {
-                        Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-                    ListItem::new(key.clone()).style(style)
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(Block::default().title(" Keys ").borders(Borders::ALL))
-                .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-
-            frame.render_widget(Clear, area);
-            frame.render_widget(list, list_layout[0]);
-
-            // Show value of selected key
-            if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
-                let value_text = self.cached_memory_values.get(key)
-                    .map(|v| v.as_str())
-                    .unwrap_or("Press Enter to fetch value");
-                
-                let paragraph = Paragraph::new(value_text)
-                    .block(Block::default().title(format!(" Value: {} ", key)).borders(Borders::ALL))
-                    .wrap(Wrap { trim: true });
-                frame.render_widget(paragraph, list_layout[1]);
-            }
-        }
+    fn draw_memory_manager(&self, _frame: &mut Frame) {
+        // Now delegated to PopupRenderer
     }
 
     /// Draw status bar
-    fn draw_status_bar(&self, frame: &mut Frame) {
-        let status_area = Rect {
-            x: frame.area().x,
-            y: frame.area().height - 1,
-            width: frame.area().width,
-            height: 1,
-        };
-
-        let mode_text = match self.session.mode {
-            SessionMode::Auto => "AUTO",
-            SessionMode::Manual => "MANUAL",
-        };
-
-        let status = format!(
-            " [{}] | Messages: {} | Ctrl+C: quit | Ctrl+B: sidebar | /help: commands ",
-            mode_text,
-            self.session.messages.len()
-        );
-
-        let status_bar = Paragraph::new(status)
-            .style(Style::default().bg(Color::Blue).fg(Color::White));
-
-        frame.render_widget(status_bar, status_area);
+    fn draw_status_bar(&self, _frame: &mut Frame) {
+        // Now delegated to PopupRenderer
     }
 
     /// Calculate centered rectangle
-    fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-        let popup_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ])
-            .split(r);
-
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ])
-            .split(popup_layout[1])[1]
+    fn centered_rect(&self, percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+        use self::popups::PopupRenderer;
+        PopupRenderer::centered_rect(percent_x, percent_y, r)
     }
 }

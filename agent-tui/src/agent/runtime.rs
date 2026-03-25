@@ -664,6 +664,7 @@ impl<L: LlmProvider + ?Sized> Default for AgentRuntimeBuilder<L> {
 mod tests {
     use super::*;
     use crate::types::{AgentRole, TaskType};
+    use crate::llm::LlmClient;
 
     // ==================== AgentCommand Tests ====================
 

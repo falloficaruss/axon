@@ -757,6 +757,7 @@ impl Orchestrator {
 mod tests {
     use super::*;
     use crate::types::{TaskType, AgentRole};
+    use crate::llm::LlmClient;
 
     // ==================== Router Tests ====================
 
