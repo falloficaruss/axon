@@ -477,7 +477,7 @@ impl App {
                     self.sidebar.next_session(self.session_manager.sessions.len());
                 }
                 KeyCode::Char('r') => {
-                    self.session_manager.refresh_session_list().await;
+                    let _ = self.session_manager.refresh_session_list().await;
                     info!("Manual sidebar refresh");
                 }
                 KeyCode::Char('l') | KeyCode::Enter => {
