@@ -128,4 +128,14 @@ impl SessionManager {
         }
         Ok(())
     }
+
+    /// Fetch selected memory value from store and cache it
+    pub async fn refresh_selected_memory_value(&mut self) -> Result<()> {
+        if let Some(key) = self.memory_keys.get(self.selected_memory_key) {
+            if let Ok(Some(value)) = self.memory_store.get(key, "session").await {
+                self.cached_memory_values.insert(key.clone(), value);
+            }
+        }
+        Ok(())
+    }
 }

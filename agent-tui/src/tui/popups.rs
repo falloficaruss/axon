@@ -179,12 +179,12 @@ impl PopupRenderer {
                 let value_text = values
                     .get(key)
                     .map(|v| v.as_str())
-                    .unwrap_or("Press Enter to fetch value");
+                    .unwrap_or("Value not found (Press Enter to try fetching again or add to chat)");
 
                 let paragraph = Paragraph::new(value_text)
                     .block(
                         Block::default()
-                            .title(format!(" Value: {} ", key))
+                            .title(format!(" Value: {} (Press Enter to add to chat) ", key))
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: true });

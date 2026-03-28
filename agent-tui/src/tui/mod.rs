@@ -300,6 +300,8 @@ impl App {
                         }
                         KeyCode::Char('m') => {
                             self.mode = AppMode::MemoryManager;
+                            let _ = self.session_manager.refresh_memory_keys().await;
+                            let _ = self.session_manager.refresh_selected_memory_value().await;
                         }
                         KeyCode::Char('a') => {
                             self.mode = AppMode::AgentSelect;
@@ -429,18 +431,19 @@ impl App {
                 KeyCode::Up | KeyCode::Char('p') => {
                     if self.session_manager.selected_memory_key > 0 {
                         self.session_manager.selected_memory_key -= 1;
+                        let _ = self.session_manager.refresh_selected_memory_value().await;
                     }
                 }
                 KeyCode::Down | KeyCode::Char('n') => {
                     if self.session_manager.selected_memory_key < self.session_manager.memory_keys.len().saturating_sub(1) {
                         self.session_manager.selected_memory_key += 1;
+                        let _ = self.session_manager.refresh_selected_memory_value().await;
                     }
                 }
                 KeyCode::Char('r') => {
-                    if let Ok(keys) = self.session_manager.memory_store.list("session").await {
-                        self.session_manager.memory_keys = keys;
-                        info!("Manual memory refresh");
-                    }
+                    let _ = self.session_manager.refresh_memory_keys().await;
+                    let _ = self.session_manager.refresh_selected_memory_value().await;
+                    info!("Manual memory refresh");
                 }
                 KeyCode::Enter => {
                     if let Some(key) = self.session_manager.memory_keys.get(self.session_manager.selected_memory_key) {
@@ -641,6 +644,7 @@ impl App {
         // Fetch memory keys if in MemoryManager mode
         if self.mode == AppMode::MemoryManager {
             let _ = self.session_manager.refresh_memory_keys().await;
+            let _ = self.session_manager.refresh_selected_memory_value().await;
         }
 
         // Update sidebar refresh timestamp
