@@ -551,6 +551,24 @@ impl App {
                 debug!("Task {} status changed to {:?}", task_id, status);
                 // TODO: Update task tracking
             }
+            AppEvent::TaskCompleted => {
+                debug!("Task execution completed");
+                self.current_task_handle = None;
+            }
+            AppEvent::AutoResult(result) => {
+                debug!("Auto-orchestration result received");
+                if result.success {
+                    let msg = Message::agent(&result.output, "orchestrator");
+                    self.session_manager.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                } else {
+                    let error_msg = result.error.unwrap_or_else(|| "Unknown routing error".to_string());
+                    let msg = Message::system(&format!("Auto-orchestration failed: {}", error_msg));
+                    self.session_manager.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
+                self.current_task_handle = None;
+            }
             AppEvent::RoutingDecision(decision) => {
                 info!(
                     "Routing decision: {:?} with confidence {}",
@@ -561,6 +579,7 @@ impl App {
             AppEvent::Error(msg) => {
                 error!("Application error: {}", msg);
                 self.chat.add_message(Message::system(&format!("Error: {}", msg)));
+                self.current_task_handle = None;
             }
             AppEvent::Status(msg) => {
                 info!("Status: {}", msg);
@@ -592,14 +611,12 @@ impl App {
                 debug!("Agent {} completed processing", agent_id);
                 self.chat.set_streaming(false);
                 if result.success {
-                    let msg = Message::agent(&result.output, &agent_id);
-                    self.session_manager.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
+                    // We don't append the full message here because it was already built by MessageUpdate
+                    let _ = self.event_tx.send(AppEvent::Status(format!("Agent {} completed successfully", agent_id))).await;
+                    let _ = self.event_tx.send(AppEvent::TaskCompleted).await;
                 } else {
                     let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
-                    let msg = Message::system(&format!("Agent {} failed: {}", agent_id, error_msg));
-                    self.session_manager.session.add_message(msg.clone());
-                    self.chat.add_message(msg);
+                    let _ = self.event_tx.send(AppEvent::Error(format!("Agent {} failed: {}", agent_id, error_msg))).await;
                 }
             }
             AgentEvent::Message { agent_id, content } => {
@@ -608,9 +625,7 @@ impl App {
             AgentEvent::Error { agent_id, error } => {
                 self.chat.set_streaming(false);
                 error!("Agent {} error: {}", agent_id, error);
-                let msg = Message::system(&format!("Agent {} error: {}", agent_id, error));
-                self.session_manager.session.add_message(msg.clone());
-                self.chat.add_message(msg);
+                let _ = self.event_tx.send(AppEvent::Error(format!("Agent {} error: {}", agent_id, error))).await;
             }
             AgentEvent::StateChanged { agent_id, state } => {
                 let _ = self.event_tx.send(AppEvent::AgentStateChanged(agent_id, state)).await;

@@ -429,6 +429,10 @@ pub enum AppEvent {
     AgentStateChanged(Id, AgentState),
     /// Task status changed
     TaskStatusChanged(Id, TaskStatus),
+    /// Task completed (manual or auto)
+    TaskCompleted,
+    /// Result of auto-orchestration
+    AutoResult(TaskResult),
     /// Routing decision made
     RoutingDecision(RoutingDecision),
     /// Error occurred
