@@ -45,6 +45,80 @@ pub struct PendingConfirmation {
     pub response_tx: tokio::sync::oneshot::Sender<bool>,
 }
 
+/// Models the current task state in the application
+pub struct TaskState {
+    /// The task's unique identifier
+    pub task_id: Option<crate::types::Id>,
+    /// Current status of the task
+    pub status: crate::types::TaskStatus,
+    /// Result of the task (if completed)
+    pub result: Option<crate::types::TaskResult>,
+    /// The async handle for the task (for cancellation)
+    pub handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Default for TaskState {
+    fn default() -> Self {
+        Self {
+            task_id: None,
+            status: crate::types::TaskStatus::Pending,
+            result: None,
+            handle: None,
+        }
+    }
+}
+
+impl TaskState {
+    /// Start a new task
+    pub fn start(&mut self, task_id: crate::types::Id, handle: tokio::task::JoinHandle<()>) {
+        self.task_id = Some(task_id);
+        self.status = crate::types::TaskStatus::Running;
+        self.result = None;
+        self.handle = Some(handle);
+    }
+
+    /// Mark task as completed successfully
+    pub fn complete(&mut self, result: crate::types::TaskResult) {
+        self.status = crate::types::TaskStatus::Completed;
+        self.result = Some(result);
+        self.handle = None;
+    }
+
+    /// Mark task as failed
+    pub fn fail(&mut self, error: String) {
+        self.status = crate::types::TaskStatus::Failed;
+        self.result = Some(crate::types::TaskResult {
+            success: false,
+            output: String::new(),
+            error: Some(error),
+            metadata: std::collections::HashMap::new(),
+        });
+        self.handle = None;
+    }
+
+    /// Cancel the task
+    pub fn cancel(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+        self.status = crate::types::TaskStatus::Cancelled;
+        self.handle = None;
+    }
+
+    /// Clear the task state
+    pub fn clear(&mut self) {
+        self.task_id = None;
+        self.status = crate::types::TaskStatus::Pending;
+        self.result = None;
+        self.handle = None;
+    }
+
+    /// Check if a task is currently running
+    pub fn is_running(&self) -> bool {
+        self.status == crate::types::TaskStatus::Running && self.handle.is_some()
+    }
+}
+
 /// Main application state
 pub struct App {
     /// Application configuration
@@ -86,8 +160,8 @@ pub struct App {
     event_tx: mpsc::Sender<AppEvent>,
     /// Tick rate
     tick_rate: Duration,
-    /// Handle to the currently running task (for cancellation)
-    current_task_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Current task state (models task lifecycle)
+    task_state: TaskState,
     /// Cached agent list for UI rendering
     cached_agents: Vec<Agent>,
     /// Selected agent index for agent selector (separate from sidebar)
@@ -194,7 +268,7 @@ impl App {
             event_rx,
             event_tx,
             tick_rate: Duration::from_millis(250),
-            current_task_handle: None,
+            task_state: TaskState::default(),
             cached_agents: Vec::new(),
             agent_selected_index: 0,
             pending_confirmation: None,
@@ -549,11 +623,21 @@ impl App {
             }
             AppEvent::TaskStatusChanged(task_id, status) => {
                 debug!("Task {} status changed to {:?}", task_id, status);
-                // TODO: Update task tracking
+                self.task_state.task_id = Some(task_id);
+                self.task_state.status = status;
             }
             AppEvent::TaskCompleted => {
                 debug!("Task execution completed");
-                self.current_task_handle = None;
+                self.task_state.clear();
+            }
+            AppEvent::TaskSuccess(result) => {
+                debug!("Task succeeded with result");
+                if result.success {
+                    let msg = Message::agent(&result.output, "task");
+                    self.session_manager.session.add_message(msg.clone());
+                    self.chat.add_message(msg);
+                }
+                self.task_state.complete(result);
             }
             AppEvent::AutoResult(result) => {
                 debug!("Auto-orchestration result received");
@@ -567,7 +651,7 @@ impl App {
                     self.session_manager.session.add_message(msg.clone());
                     self.chat.add_message(msg);
                 }
-                self.current_task_handle = None;
+                self.task_state.clear();
             }
             AppEvent::RoutingDecision(decision) => {
                 info!(
@@ -579,7 +663,7 @@ impl App {
             AppEvent::Error(msg) => {
                 error!("Application error: {}", msg);
                 self.chat.add_message(Message::system(&format!("Error: {}", msg)));
-                self.current_task_handle = None;
+                self.task_state.fail(msg);
             }
             AppEvent::Status(msg) => {
                 info!("Status: {}", msg);
@@ -692,7 +776,7 @@ impl App {
         }
 
         // Check if a task is already running
-        if self.current_task_handle.is_some() {
+        if self.task_state.is_running() {
             let error_msg = Message::system("A task is already running. Use /cancel or press Ctrl+X to cancel it first.");
             self.session_manager.session.add_message(error_msg.clone());
             self.chat.add_message(error_msg);
@@ -736,6 +820,9 @@ impl App {
                         self.session_manager.session.add_message(processing_msg.clone());
                         self.chat.add_message(processing_msg);
 
+                        // Clone ID for task state before moving into async block
+                        let session_id = session_clone.id.clone();
+
                         // Spawn the agent execution in a background task
                         let handle = tokio::spawn(async move {
                             let result = orchestrator.execute_chat_streaming(agent, content, history, &session_clone.id).await;
@@ -746,7 +833,7 @@ impl App {
                                 ))).await;
                             }
                         });
-                        self.current_task_handle = Some(handle);
+                        self.task_state.start(session_id, handle);
                     } else {
                         let error_msg = Message::system("No agent selected. Use /agent <name> to select an agent.");
                         self.session_manager.session.add_message(error_msg.clone());
@@ -761,6 +848,7 @@ impl App {
 
                     // Create a task
                     let task = Task::new(&content, TaskType::General);
+                    let task_id = task.id.clone();
 
                     // Spawn the auto-orchestration in a background task
                     let handle = tokio::spawn(async move {
@@ -768,7 +856,9 @@ impl App {
 
                         match result {
                             Ok(res) => {
-                                if !res.success {
+                                if res.success {
+                                    let _ = event_tx.send(AppEvent::TaskSuccess(res)).await;
+                                } else {
                                     let error_msg = res.error.unwrap_or_else(|| "Unknown routing error".to_string());
                                     let _ = event_tx.send(AppEvent::Error(format!(
                                         "Auto-routing failed: {}", error_msg
@@ -782,7 +872,7 @@ impl App {
                             }
                         }
                     });
-                    self.current_task_handle = Some(handle);
+                    self.task_state.start(task_id, handle);
                 }
             }
         } else {
@@ -798,8 +888,8 @@ impl App {
 
     /// Cancel the currently running task
     async fn cancel_current_task(&mut self) -> Result<()> {
-        if let Some(handle) = self.current_task_handle.take() {
-            handle.abort();
+        if self.task_state.is_running() {
+            self.task_state.cancel();
             let msg = Message::system("Task cancelled by user.");
             self.session_manager.session.add_message(msg.clone());
             self.chat.add_message(msg);

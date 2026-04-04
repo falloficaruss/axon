@@ -431,6 +431,8 @@ pub enum AppEvent {
     TaskStatusChanged(Id, TaskStatus),
     /// Task completed (manual or auto)
     TaskCompleted,
+    /// Task succeeded with result (for auto-mode)
+    TaskSuccess(TaskResult),
     /// Result of auto-orchestration
     AutoResult(TaskResult),
     /// Routing decision made
