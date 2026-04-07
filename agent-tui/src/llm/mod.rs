@@ -15,6 +15,7 @@ use async_openai::{
 };
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
+use tracing::warn;
 use crate::types::{Message, MessageRole};
 
 #[cfg(any(test, feature = "mock-llm"))]
@@ -163,33 +164,52 @@ impl LlmProvider for LlmClient {
         &self,
         messages: &[Message],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
-        let request_messages = Self::convert_messages(messages);
+        const MAX_RETRIES: u32 = 3;
+        const INITIAL_BACKOFF_MS: u64 = 1000;
 
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages(request_messages)
-            .max_tokens(self.max_tokens)
-            .temperature(self.temperature)
-            .stream(true)
-            .build()?;
+        let mut last_error = None;
 
-        let stream = self.client.chat().create_stream(request).await?;
+        for attempt in 0..MAX_RETRIES {
+            let request_messages = Self::convert_messages(messages);
 
-        // Transform the stream to extract content strings
-        let content_stream = stream.filter_map(|chunk| async move {
-            match chunk {
-                Ok(chunk) => {
-                    let content = chunk
-                        .choices
-                        .first()
-                        .and_then(|choice| choice.delta.content.clone());
-                    content.map(Ok)
+            let request = CreateChatCompletionRequestArgs::default()
+                .model(&self.model)
+                .messages(request_messages)
+                .max_tokens(self.max_tokens)
+                .temperature(self.temperature)
+                .stream(true)
+                .build()?;
+
+            match self.client.chat().create_stream(request).await {
+                Ok(stream) => {
+                    let content_stream = stream.filter_map(|chunk| async move {
+                        match chunk {
+                            Ok(chunk) => {
+                                let content = chunk
+                                    .choices
+                                    .first()
+                                    .and_then(|choice| choice.delta.content.clone());
+                                content.map(Ok)
+                            }
+                            Err(e) => Some(Err(anyhow!("Stream error: {}", e))),
+                        }
+                    });
+
+                    return Ok(Box::pin(content_stream));
                 }
-                Err(e) => Some(Err(anyhow!("Stream error: {}", e))),
+                Err(e) => {
+                    warn!("Streaming request attempt {} failed: {}", attempt + 1, e);
+                    last_error = Some(e);
+                    
+                    if attempt < MAX_RETRIES - 1 {
+                        let backoff_ms = INITIAL_BACKOFF_MS * 2u64.pow(attempt);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                    }
+                }
             }
-        });
+        }
 
-        Ok(Box::pin(content_stream))
+        Err(anyhow!("Failed after {} retries: {}", MAX_RETRIES, last_error.unwrap()))
     }
 }
 

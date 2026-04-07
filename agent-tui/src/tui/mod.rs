@@ -246,6 +246,7 @@ impl App {
                 shared_memory.clone(),
                 agent_event_tx.clone(),
                 config.orchestration.max_concurrent_agents,
+                config.workspace_root(),
             ))
         });
         
@@ -689,30 +690,39 @@ impl App {
             AgentEvent::Started { agent_id } => {
                 debug!("Agent {} started processing", agent_id);
                 self.chat.set_streaming(true);
-                let _ = self.event_tx.send(AppEvent::Status(format!("Agent {} started", agent_id))).await;
+                if let Err(e) = self.event_tx.send(AppEvent::Status(format!("Agent {} started", agent_id))).await {
+                    warn!("Failed to send agent started status: {}", e);
+                }
             }
             AgentEvent::Completed { agent_id, result } => {
                 debug!("Agent {} completed processing", agent_id);
                 self.chat.set_streaming(false);
                 if result.success {
-                    // We don't append the full message here because it was already built by MessageUpdate
                     let _ = self.event_tx.send(AppEvent::Status(format!("Agent {} completed successfully", agent_id))).await;
                     let _ = self.event_tx.send(AppEvent::TaskCompleted).await;
                 } else {
                     let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
-                    let _ = self.event_tx.send(AppEvent::Error(format!("Agent {} failed: {}", agent_id, error_msg))).await;
+                    if let Err(e) = self.event_tx.send(AppEvent::Error(format!("Agent {} failed: {}", agent_id, error_msg))).await {
+                        warn!("Failed to send agent failed error: {}", e);
+                    }
                 }
             }
             AgentEvent::Message { agent_id, content } => {
-                let _ = self.event_tx.send(AppEvent::MessageUpdate { agent_id, content }).await;
+                if let Err(e) = self.event_tx.send(AppEvent::MessageUpdate { agent_id, content }).await {
+                    warn!("Failed to send message update: {}", e);
+                }
             }
             AgentEvent::Error { agent_id, error } => {
                 self.chat.set_streaming(false);
                 error!("Agent {} error: {}", agent_id, error);
-                let _ = self.event_tx.send(AppEvent::Error(format!("Agent {} error: {}", agent_id, error))).await;
+                if let Err(e) = self.event_tx.send(AppEvent::Error(format!("Agent {} error: {}", agent_id, error))).await {
+                    warn!("Failed to send agent error: {}", e);
+                }
             }
             AgentEvent::StateChanged { agent_id, state } => {
-                let _ = self.event_tx.send(AppEvent::AgentStateChanged(agent_id, state)).await;
+                if let Err(e) = self.event_tx.send(AppEvent::AgentStateChanged(agent_id, state)).await {
+                    warn!("Failed to send agent state changed: {}", e);
+                }
             }
             AgentEvent::ConfirmationRequest { agent_id, title, message, changes, response_tx } => {
                 debug!("Agent {} requested confirmation: {}", agent_id, title);
@@ -787,6 +797,9 @@ impl App {
         let msg = Message::user(&content);
         self.session_manager.session.add_message(msg.clone());
         self.chat.add_message(msg);
+
+        // Add to input history
+        self.input.add_to_history(&content);
 
         // Clear input
         self.input.clear();

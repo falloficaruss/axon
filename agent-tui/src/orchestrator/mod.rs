@@ -24,6 +24,7 @@ use crate::{
 pub const AGENT_CONFIDENCE_THRESHOLD: f32 = 0.6;
 
 /// Dynamic task router
+#[derive(Clone)]
 pub struct Router;
 
 impl Router {
@@ -146,6 +147,7 @@ impl Default for Router {
 }
 
 /// Task planner for decomposition
+#[derive(Clone)]
 pub struct Planner {
     llm_client: Option<Arc<dyn LlmProvider>>,
 }
@@ -358,12 +360,15 @@ impl Planner {
 }
 
 /// Task executor that manages agent execution
+#[derive(Clone)]
 pub struct Executor {
     /// Agent pool for managing running agents
     pool: AgentPool,
     /// Shared memory for agents
     #[allow(dead_code)]
     shared_memory: Arc<SharedMemory>,
+    /// Maximum concurrent agents (for creating new executors if needed)
+    max_concurrent: usize,
 }
 
 impl Executor {
@@ -373,10 +378,12 @@ impl Executor {
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
+        workspace_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
-            pool: AgentPool::new(max_concurrent, llm_client, shared_memory.clone(), event_tx),
+            pool: AgentPool::new(max_concurrent, llm_client, shared_memory.clone(), event_tx, workspace_root),
             shared_memory,
+            max_concurrent,
         }
     }
 
@@ -484,6 +491,7 @@ impl Executor {
 }
 
 /// Orchestrator that coordinates routing, planning, and execution
+#[derive(Clone)]
 pub struct Orchestrator {
     /// LLM client for routing and planning
     llm_client: Arc<dyn LlmProvider>,
@@ -497,6 +505,8 @@ pub struct Orchestrator {
     planner: Planner,
     /// Task executor
     executor: Executor,
+    /// Workspace root for file operations
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl Orchestrator {
@@ -507,6 +517,7 @@ impl Orchestrator {
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
+        workspace_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             llm_client: llm_client.clone(),
@@ -514,7 +525,8 @@ impl Orchestrator {
             shared_memory: shared_memory.clone(),
             router: Router::new(),
             planner: Planner::new(Some(llm_client.clone())),
-            executor: Executor::new(llm_client, shared_memory, event_tx, max_concurrent),
+            executor: Executor::new(llm_client, shared_memory, event_tx, max_concurrent, workspace_root.clone()),
+            workspace_root,
         }
     }
 
@@ -568,8 +580,10 @@ impl Orchestrator {
                 let subtask_id = subtask.id.clone();
                 in_progress.insert(subtask_id.clone());
 
-                // Create execution task
-                let orchestrator = Arc::new(self.clone_internal());
+                // Use shared executor instead of creating new clones for each subtask
+                let executor = self.executor.clone();
+                let registry = self.registry.clone();
+                let llm_client = self.llm_client.clone();
                 let session_clone = session.clone();
                 let mut dep_results = HashMap::new();
                 
@@ -580,7 +594,14 @@ impl Orchestrator {
                 }
 
                 join_set.spawn(async move {
-                    let res = orchestrator.execute_subtask_internal(subtask, &session_clone, dep_results).await;
+                    let res = Self::execute_subtask_with_executor(
+                        executor,
+                        registry,
+                        llm_client,
+                        subtask,
+                        &session_clone,
+                        dep_results,
+                    ).await;
                     (subtask_id, res)
                 });
             }
@@ -642,6 +663,7 @@ impl Orchestrator {
     }
 
     /// Internal clone for task spawning
+    #[allow(dead_code)]
     fn clone_internal(&self) -> Self {
         Self {
             llm_client: self.llm_client.clone(),
@@ -653,8 +675,10 @@ impl Orchestrator {
                 self.llm_client.clone(),
                 self.shared_memory.clone(),
                 self.executor.pool.event_tx.clone(),
-                self.executor.pool.max_concurrent
+                self.executor.pool.max_concurrent,
+                self.workspace_root.clone(),
             ),
+            workspace_root: self.workspace_root.clone(),
         }
     }
 
@@ -703,6 +727,60 @@ impl Orchestrator {
 
             let task = Task::new(&subtask.description, subtask.task_type);
             self.executor.execute_task(agent, task, context).await
+        } else {
+            Ok(TaskResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("No high-confidence agent found for subtask: {}", subtask.description)),
+                metadata: Default::default(),
+            })
+        }
+    }
+
+    /// Execute subtask with shared executor (for parallel execution without creating new pools)
+    async fn execute_subtask_with_executor(
+        executor: Executor,
+        registry: Arc<RwLock<AgentRegistry>>,
+        llm_client: Arc<dyn LlmProvider>,
+        subtask: Subtask,
+        session: &Session,
+        dependency_results: HashMap<Id, TaskResult>,
+    ) -> Result<TaskResult> {
+        info!("Executing subtask with shared executor: {}", subtask.description);
+
+        let agent = if let Some(agent_id) = &subtask.suggested_agent {
+            let reg = registry.read().await;
+            reg.get_by_id(agent_id).cloned()
+        } else {
+            let router = Router::new();
+            let temp_task = Task::new(&subtask.description, subtask.task_type);
+            let reg = registry.read().await;
+            let analysis = router.analyze(llm_client.clone(), &reg, &temp_task, session).await?;
+            let decision = router.route(temp_task, analysis).await?;
+
+            if decision.confidence > AGENT_CONFIDENCE_THRESHOLD && !decision.selected_agents.is_empty() {
+                let agent_id = &decision.selected_agents[0];
+                let reg = registry.read().await;
+                reg.get_by_id(agent_id).cloned()
+            } else {
+                None
+            }
+        };
+
+        if let Some(agent) = agent {
+            let mut context_messages = session.messages.clone();
+            for (dep_id, dep_result) in dependency_results {
+                context_messages.push(Message::system(&format!(
+                    "Previous subtask result (ID: {}): {}",
+                    dep_id, dep_result.output
+                )));
+            }
+
+            let context = ExecutionContext::new(&session.id)
+                .with_messages(context_messages);
+
+            let task = Task::new(&subtask.description, subtask.task_type);
+            executor.execute_task(agent, task, context).await
         } else {
             Ok(TaskResult {
                 success: false,
@@ -992,7 +1070,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let executor = Executor::new(llm_client, shared_memory, event_tx, 5);
+        let executor = Executor::new(llm_client, shared_memory, event_tx, 5, None);
         
         // Verify executor was created
         let count = executor.active_count().await;
@@ -1005,7 +1083,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let executor = Executor::new(llm_client, shared_memory, event_tx, 2);
+        let executor = Executor::new(llm_client, shared_memory, event_tx, 2, None);
         
         assert!(!executor.is_at_capacity().await);
     }
@@ -1019,7 +1097,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None);
         
         assert!(orchestrator.executor().active_count().await == 0);
     }
@@ -1031,7 +1109,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
 
-        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None);
         let task = Task::new("Test task", TaskType::CodeGeneration);
         let session = Session::new("Test Session");
 
@@ -1056,7 +1134,7 @@ mod tests {
 
         let registry = Arc::new(RwLock::new(registry));
         let shared_memory = Arc::new(SharedMemory::new());
-        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5);
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None);
 
         let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
         let history = vec![Message::user("Hello")];

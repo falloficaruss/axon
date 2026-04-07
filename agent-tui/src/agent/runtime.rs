@@ -170,6 +170,7 @@ pub struct AgentRuntime<L: LlmProvider + ?Sized = LlmClient> {
     llm_client: Arc<L>,
     shared_memory: Arc<SharedMemory>,
     event_tx: mpsc::Sender<AgentEvent>,
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl<L: LlmProvider + ?Sized> AgentRuntime<L> {
@@ -179,12 +180,14 @@ impl<L: LlmProvider + ?Sized> AgentRuntime<L> {
         llm_client: Arc<L>,
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
+        workspace_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             agent,
             llm_client,
             shared_memory,
             event_tx,
+            workspace_root,
         }
     }
 
@@ -341,7 +344,7 @@ impl<L: LlmProvider + ?Sized> AgentRuntime<L> {
         match rx.await {
             Ok(true) => {
                 info!("Agent {} confirmation received, applying changes...", agent_id);
-                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes) {
+                if let Err(e) = crate::agent::agents::coder::CoderAgent::apply_changes(&changes, self.workspace_root.as_deref()) {
                     error!("Agent {} failed to apply changes: {}", agent_id, e);
                     result.success = false;
                     result.error = Some(format!("Failed to apply changes: {}", e));
@@ -599,6 +602,7 @@ pub struct AgentRuntimeBuilder<L: LlmProvider + ?Sized = LlmClient> {
     llm_client: Option<Arc<L>>,
     shared_memory: Option<Arc<SharedMemory>>,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl<L: LlmProvider + ?Sized> AgentRuntimeBuilder<L> {
@@ -609,6 +613,7 @@ impl<L: LlmProvider + ?Sized> AgentRuntimeBuilder<L> {
             llm_client: None,
             shared_memory: None,
             event_tx: None,
+            workspace_root: None,
         }
     }
 
@@ -636,6 +641,12 @@ impl<L: LlmProvider + ?Sized> AgentRuntimeBuilder<L> {
         self
     }
 
+    /// Set the workspace root for file operations
+    pub fn workspace_root(mut self, path: std::path::PathBuf) -> Self {
+        self.workspace_root = Some(path);
+        self
+    }
+
     /// Build and spawn the agent runtime
     pub async fn spawn(self) -> Result<AgentInstance> {
         let agent = self.agent.ok_or_else(|| anyhow!("Agent not set"))?;
@@ -644,7 +655,7 @@ impl<L: LlmProvider + ?Sized> AgentRuntimeBuilder<L> {
         let event_tx = self.event_tx.ok_or_else(|| anyhow!("Event sender not set"))?;
 
         let agent_arc = Arc::new(RwLock::new(agent));
-        let runtime = AgentRuntime::new(agent_arc.clone(), llm_client, shared_memory, event_tx);
+        let runtime = AgentRuntime::new(agent_arc.clone(), llm_client, shared_memory, event_tx, self.workspace_root);
         let handle = runtime.spawn().await;
 
         Ok(AgentInstance {

@@ -224,8 +224,17 @@ impl CoderAgent {
     }
 
     /// Write content to a file (creates parent directories if needed)
-    pub fn write_file<P: AsRef<Path>>(path: P, content: &str) -> Result<()> {
+    /// If workspace_root is set, validates the path is within that directory
+    pub fn write_file<P: AsRef<Path>>(path: P, content: &str, workspace_root: Option<&Path>) -> Result<()> {
         let path = path.as_ref();
+
+        if let Some(root) = workspace_root {
+            let abs_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let abs_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            if !abs_path.starts_with(&abs_root) {
+                return Err(anyhow!("Path {:?} is outside workspace root {:?}", path, root));
+            }
+        }
 
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
@@ -237,23 +246,34 @@ impl CoderAgent {
     }
 
     /// Delete a file
-    pub fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
-        fs::remove_file(path.as_ref())
-            .with_context(|| format!("Failed to delete file: {:?}", path.as_ref()))
+    /// If workspace_root is set, validates the path is within that directory
+    pub fn delete_file<P: AsRef<Path>>(path: P, workspace_root: Option<&Path>) -> Result<()> {
+        let path = path.as_ref();
+
+        if let Some(root) = workspace_root {
+            let abs_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let abs_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            if !abs_path.starts_with(&abs_root) {
+                return Err(anyhow!("Path {:?} is outside workspace root {:?}", path, root));
+            }
+        }
+
+        fs::remove_file(&path)
+            .with_context(|| format!("Failed to delete file: {:?}", path))
     }
 
     /// Apply code changes to files
-    pub fn apply_changes(changes: &[CodeChange]) -> Result<Vec<String>> {
+    pub fn apply_changes(changes: &[CodeChange], workspace_root: Option<&Path>) -> Result<Vec<String>> {
         let mut applied_files = Vec::new();
 
         for change in changes {
             match change.operation {
                 FileOperation::Create | FileOperation::Update => {
-                    Self::write_file(&change.file_path, &change.content)?;
+                    Self::write_file(&change.file_path, &change.content, workspace_root)?;
                     applied_files.push(change.file_path.to_string_lossy().to_string());
                 }
                 FileOperation::Delete => {
-                    Self::delete_file(&change.file_path)?;
+                    Self::delete_file(&change.file_path, workspace_root)?;
                     applied_files.push(change.file_path.to_string_lossy().to_string());
                 }
             }

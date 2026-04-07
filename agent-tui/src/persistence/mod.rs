@@ -156,8 +156,35 @@ impl MemoryStore {
         scope_dir.join(format!("{}.memory", key))
     }
 
+    /// Validate key to prevent path traversal
+    fn validate_key(&self, key: &str) -> Result<()> {
+        if key.is_empty() || key.len() > 256 {
+            return Err(anyhow!("Invalid key: length must be 1-256 characters"));
+        }
+        if !key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err(anyhow!("Invalid key: must be alphanumeric, underscore, or hyphen only"));
+        }
+        if key.starts_with('.') || key.contains("..") {
+            return Err(anyhow!("Invalid key: cannot start with dot or contain path traversal"));
+        }
+        Ok(())
+    }
+
+    /// Validate scope to prevent path traversal
+    fn validate_scope(&self, scope: &str) -> Result<()> {
+        if scope.is_empty() || scope.len() > 64 {
+            return Err(anyhow!("Invalid scope: length must be 1-64 characters"));
+        }
+        if !scope.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err(anyhow!("Invalid scope: must be alphanumeric, underscore, or hyphen only"));
+        }
+        Ok(())
+    }
+
     /// Store a value
     pub async fn set(&self, key: &str, value: &str, scope: &str) -> Result<()> {
+        self.validate_key(key)?;
+        self.validate_scope(scope)?;
         let scope_dir = self.ensure_dir(scope).await?;
         let path = self.key_path(&scope_dir, key);
         fs::write(path, value).await?;
@@ -166,6 +193,8 @@ impl MemoryStore {
 
     /// Retrieve a value
     pub async fn get(&self, key: &str, scope: &str) -> Result<Option<String>> {
+        self.validate_key(key)?;
+        self.validate_scope(scope)?;
         let scope_dir = self.ensure_dir(scope).await?;
         let path = self.key_path(&scope_dir, key);
         if !path.exists() {
@@ -177,6 +206,8 @@ impl MemoryStore {
 
     /// Delete a value
     pub async fn delete(&self, key: &str, scope: &str) -> Result<()> {
+        self.validate_key(key)?;
+        self.validate_scope(scope)?;
         let scope_dir = self.ensure_dir(scope).await?;
         let path = self.key_path(&scope_dir, key);
         if path.exists() {
@@ -187,6 +218,7 @@ impl MemoryStore {
 
     /// List all keys in a scope
     pub async fn list(&self, scope: &str) -> Result<Vec<String>> {
+        self.validate_scope(scope)?;
         let scope_dir = self.ensure_dir(scope).await?;
 
         let mut keys = Vec::new();

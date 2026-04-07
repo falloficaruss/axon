@@ -17,6 +17,7 @@ use crate::{
 };
 
 /// Manager for a pool of running agents
+#[derive(Clone)]
 pub struct AgentPool {
     /// Maximum number of concurrent agents
     pub max_concurrent: usize,
@@ -28,6 +29,8 @@ pub struct AgentPool {
     shared_memory: Arc<SharedMemory>,
     /// Event sender for agent events
     pub event_tx: mpsc::Sender<AgentEvent>,
+    /// Workspace root for file operations
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl AgentPool {
@@ -37,6 +40,7 @@ impl AgentPool {
         llm_client: Arc<dyn LlmProvider>,
         shared_memory: Arc<SharedMemory>,
         event_tx: mpsc::Sender<AgentEvent>,
+        workspace_root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             max_concurrent,
@@ -44,6 +48,7 @@ impl AgentPool {
             llm_client,
             shared_memory,
             event_tx,
+            workspace_root,
         }
     }
 
@@ -75,13 +80,17 @@ impl AgentPool {
         let agent_id = agent.id.clone();
         
         // Build and spawn the agent runtime
-        let instance = AgentRuntimeBuilder::new()
+        let mut builder = AgentRuntimeBuilder::new()
             .agent(agent)
             .llm_client(self.llm_client.clone())
             .shared_memory(self.shared_memory.clone())
-            .event_tx(self.event_tx.clone())
-            .spawn()
-            .await?;
+            .event_tx(self.event_tx.clone());
+        
+        if let Some(ref root) = self.workspace_root {
+            builder = builder.workspace_root(root.clone());
+        }
+        
+        let instance = builder.spawn().await?;
 
         let handle = instance.handle.clone();
 

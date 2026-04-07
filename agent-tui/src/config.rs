@@ -97,6 +97,14 @@ impl Config {
         Self::resolve_path(&self.persistence.memory_dir)
     }
 
+    /// Get absolute workspace root directory (for file operations)
+    pub fn workspace_root(&self) -> Option<PathBuf> {
+        self.persistence
+            .workspace_root
+            .as_ref()
+            .map(|p| Self::resolve_path(p))
+    }
+
     /// Default agent configurations
     fn default_agents() -> HashMap<String, AgentConfig> {
         let mut agents = HashMap::new();
@@ -298,6 +306,8 @@ pub struct PersistenceConfig {
     pub session_dir: String,
     /// Directory for memory
     pub memory_dir: String,
+    /// Workspace root for file operations (restricts where agents can write)
+    pub workspace_root: Option<String>,
     /// Auto-save interval in seconds
     pub auto_save_interval: u64,
     /// Maximum number of sessions to keep
@@ -309,6 +319,7 @@ impl Default for PersistenceConfig {
         Self {
             session_dir: "~/.agent-tui/sessions".to_string(),
             memory_dir: "~/.agent-tui/memory".to_string(),
+            workspace_root: None,
             auto_save_interval: 30,
             max_sessions: 100,
         }

@@ -118,7 +118,7 @@ impl Input {
     }
 
     /// Add content to history
-    fn add_to_history(&mut self, content: &str) {
+    pub fn add_to_history(&mut self, content: &str) {
         if !content.trim().is_empty() {
             // Don't add duplicates at the end
             if self.history.last() != Some(&content.to_string()) {
