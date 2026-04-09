@@ -301,6 +301,47 @@ impl MockLlmClient {
         };
         self.call_history.lock().unwrap().push(call);
     }
+
+    /// Return deterministic JSON for orchestrator flows that expect structured output.
+    fn structured_response(messages: &[Message]) -> Option<String> {
+        let prompt = messages
+            .iter()
+            .find(|m| m.role == MessageRole::System)
+            .map(|m| m.content.as_str())
+            .unwrap_or_default();
+
+        if prompt.contains("You are an AI task router") {
+            return Some(
+                r#"{
+  "task_type": "CodeGeneration",
+  "suggested_agents": [["coder", 0.95]],
+  "can_parallelize": false,
+  "estimated_complexity": 3,
+  "requires_subtasks": false
+}"#
+                .to_string(),
+            );
+        }
+
+        if prompt.contains("You are an expert task planner") {
+            return Some(
+                r#"{
+  "subtasks": [
+    {
+      "description": "Handle the user's request",
+      "task_type": "CodeGeneration",
+      "suggested_agent": "coder",
+      "dependencies": []
+    }
+  ],
+  "parallel_groups": [[0]]
+}"#
+                .to_string(),
+            );
+        }
+
+        None
+    }
 }
 
 #[cfg(any(test, feature = "mock-llm"))]
@@ -316,8 +357,11 @@ impl LlmProvider for MockLlmClient {
             tokio::time::sleep(tokio::time::Duration::from_millis(latency)).await;
         }
 
-        // Return the configured response
-        let response = self.default_response.read().await.clone();
+        // Return a deterministic structured response for router/planner prompts.
+        let response = match Self::structured_response(messages) {
+            Some(response) => response,
+            None => self.default_response.read().await.clone(),
+        };
         Ok(response)
     }
 

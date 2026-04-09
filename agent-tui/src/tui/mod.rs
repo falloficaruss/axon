@@ -6,14 +6,13 @@ pub mod popups;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
     Frame, Terminal,
 };
 use std::io;
@@ -27,10 +26,14 @@ use crate::{
     agent::{AgentEvent},
     agent::AgentRegistry,
     config::Config,
-    llm::LlmClient,
+    llm::LlmProvider,
     orchestrator::Orchestrator,
     types::{AppEvent, Message, MessageRole, SessionMode, Agent, Task, TaskType},
 };
+#[cfg(feature = "mock-llm")]
+use crate::llm::MockLlmClient;
+#[cfg(not(feature = "mock-llm"))]
+use crate::llm::LlmClient;
 
 use self::components::{Chat, Input, Sidebar};
 use crate::shared::SharedMemory;
@@ -133,7 +136,7 @@ pub struct App {
     sidebar: Sidebar,
     /// LLM client (used by orchestrator; retained for direct-access use cases)
     #[allow(dead_code)]
-    llm_client: Option<Arc<LlmClient>>,
+    llm_client: Option<Arc<dyn LlmProvider>>,
     /// Orchestrator for task execution
     orchestrator: Option<Arc<Orchestrator>>,
     /// Agent registry
@@ -194,8 +197,18 @@ impl App {
         let (event_tx, event_rx) = mpsc::channel(100);
         let (agent_event_tx, agent_event_rx) = mpsc::channel(100);
         
-        // Initialize LLM client if API key is available
-        let llm_client = if config.llm.api_key.starts_with("$") {
+        // Initialize LLM client if API key is available, or force a mock provider when built
+        // with the `mock-llm` feature for local UI testing without external API calls.
+        #[cfg(feature = "mock-llm")]
+        let llm_client: Option<Arc<dyn LlmProvider>> = {
+            info!("Initializing mock LLM client (`mock-llm` feature enabled)");
+            Some(Arc::new(MockLlmClient::new(
+                "Mock response from agent-tui.",
+            )))
+        };
+
+        #[cfg(not(feature = "mock-llm"))]
+        let llm_client: Option<Arc<dyn LlmProvider>> = if config.llm.api_key.starts_with("$") {
             // Try to get from environment variable
             let env_var = &config.llm.api_key[1..];
             match std::env::var(env_var) {
@@ -362,6 +375,10 @@ impl App {
 
     /// Handle key events
     async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return Ok(());
+        }
+
         match self.mode {
             AppMode::Normal => {
                 // Check for Ctrl+key combinations first
@@ -449,6 +466,12 @@ impl App {
                         KeyCode::Right => {
                             self.input.move_cursor_right();
                         }
+                        KeyCode::Home => {
+                            self.input.move_cursor_home();
+                        }
+                        KeyCode::End => {
+                            self.input.move_cursor_end();
+                        }
                         _ => {}
                     }
                 }
@@ -470,6 +493,18 @@ impl App {
                     if self.input.is_empty() {
                         self.mode = AppMode::Normal;
                     }
+                }
+                KeyCode::Left => {
+                    self.input.move_cursor_left();
+                }
+                KeyCode::Right => {
+                    self.input.move_cursor_right();
+                }
+                KeyCode::Home => {
+                    self.input.move_cursor_home();
+                }
+                KeyCode::End => {
+                    self.input.move_cursor_end();
                 }
                 _ => {}
             },

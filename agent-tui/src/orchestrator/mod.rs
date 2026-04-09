@@ -547,7 +547,7 @@ impl Orchestrator {
             // Simple task - create a single-step plan
             info!("Task is simple, executing directly...");
             let mut plan = Plan::new(task.clone());
-            let subtask = Subtask::new(&task.description, task.task_type);
+            let subtask = Subtask::new(&task.description, analysis.task_type);
             plan.subtasks = vec![subtask];
             plan
         };
@@ -835,7 +835,7 @@ impl Orchestrator {
 mod tests {
     use super::*;
     use crate::types::{TaskType, AgentRole};
-    use crate::llm::LlmClient;
+    use crate::llm::{LlmClient, MockLlmClient};
 
     // ==================== Router Tests ====================
 
@@ -1124,7 +1124,9 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_execute_chat_streaming() {
         let (event_tx, _event_rx) = mpsc::channel(10);
-        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let mock_llm = MockLlmClient::new("mock stream response");
+        mock_llm.set_streaming(false).await;
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(mock_llm);
         let mut registry = AgentRegistry::new();
 
         // Register a test agent
@@ -1139,8 +1141,10 @@ mod tests {
         let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
         let history = vec![Message::user("Hello")];
 
-        // This will call the LLM API - the result depends on API availability
-        // The test verifies the function completes without panicking
-        let _ = orchestrator.execute_chat_streaming(agent, "Test".to_string(), history, "test-session").await;
+        let result = orchestrator
+            .execute_chat_streaming(agent, "Test".to_string(), history, "test-session")
+            .await;
+
+        assert!(result.is_ok());
     }
 }

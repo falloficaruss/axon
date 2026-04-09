@@ -155,6 +155,14 @@ impl Chat {
         }
 
         let content_height = all_lines.len();
+        let viewport_height = area.height.saturating_sub(2) as usize;
+        let max_scroll = content_height.saturating_sub(viewport_height);
+
+        if self.auto_scroll {
+            self.scroll = max_scroll.min(u16::MAX as usize) as u16;
+        } else if self.scroll as usize > max_scroll {
+            self.scroll = max_scroll.min(u16::MAX as usize) as u16;
+        }
 
         let paragraph = Paragraph::new(Text::from(all_lines))
             .block(block)
@@ -164,7 +172,10 @@ impl Chat {
         frame.render_widget(paragraph, area);
 
         // Update scroll state after rendering
-        self.scroll_state = self.scroll_state.content_length(content_height);
+        self.scroll_state = self
+            .scroll_state
+            .content_length(content_height)
+            .position(self.scroll as usize);
 
         // Scrollbar
         let scrollbar = Scrollbar::default()
@@ -192,8 +203,6 @@ impl Default for Chat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Id;
-
     #[test]
     fn test_chat_new() {
         let chat = Chat::new();

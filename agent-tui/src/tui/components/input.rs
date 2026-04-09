@@ -71,6 +71,16 @@ impl Input {
         }
     }
 
+    /// Move cursor to the beginning of the input
+    pub fn move_cursor_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Move cursor to the end of the input
+    pub fn move_cursor_end(&mut self) {
+        self.cursor = self.content.len();
+    }
+
     /// Clear input
     pub fn clear(&mut self) {
         self.content.clear();
@@ -300,6 +310,30 @@ mod tests {
         assert_eq!(input.cursor, 2);
 
         input.move_cursor_right(); // Should not exceed length
+        assert_eq!(input.cursor, 2);
+    }
+
+    #[test]
+    fn test_input_move_cursor_home() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.move_cursor_left();
+
+        input.move_cursor_home();
+
+        assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn test_input_move_cursor_end() {
+        let mut input = Input::new();
+        input.insert_char('H');
+        input.insert_char('i');
+        input.cursor = 0;
+
+        input.move_cursor_end();
+
         assert_eq!(input.cursor, 2);
     }
 

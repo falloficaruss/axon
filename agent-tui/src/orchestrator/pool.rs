@@ -226,7 +226,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         assert_eq!(pool.active_count().await, 0);
         assert!(!pool.is_at_capacity().await);
@@ -239,7 +239,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(2, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(2, llm_client, shared_memory, event_tx, None);
         
         assert_eq!(pool.available_capacity().await, 2);
         assert!(!pool.is_at_capacity().await);
@@ -251,7 +251,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         let agents = pool.list_agents().await;
         assert!(agents.is_empty());
@@ -263,7 +263,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         let agent = pool.get_agent(&"nonexistent".to_string()).await;
         assert!(agent.is_none());
@@ -275,7 +275,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         let state = pool.get_agent_state(&"nonexistent".to_string()).await;
         assert!(state.is_none());
@@ -287,7 +287,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         let result = pool.shutdown_agent(&"nonexistent".to_string()).await;
         assert!(result.is_err());
@@ -299,7 +299,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         let cleaned = pool.cleanup_finished().await;
         assert_eq!(cleaned, 0);
@@ -311,7 +311,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         assert!(!pool.is_running(&"agent-1".to_string()).await);
     }
@@ -322,7 +322,7 @@ mod tests {
         let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx);
+        let pool = AgentPool::new(5, llm_client, shared_memory, event_tx, None);
         
         let result = pool.shutdown_all().await;
         assert!(result.is_ok());

@@ -401,7 +401,7 @@ Second file:\n\
         let file_path = temp_dir.path().join("test.txt");
 
         let content = "Hello, World!";
-        CoderAgent::write_file(&file_path, content).unwrap();
+        CoderAgent::write_file(&file_path, content, None).unwrap();
 
         let read_content = CoderAgent::read_file(&file_path).unwrap();
         assert_eq!(read_content, content);
@@ -413,7 +413,7 @@ Second file:\n\
         let file_path = temp_dir.path().join("nested/dir/test.txt");
 
         let content = "Nested file content";
-        CoderAgent::write_file(&file_path, content).unwrap();
+        CoderAgent::write_file(&file_path, content, None).unwrap();
 
         let read_content = CoderAgent::read_file(&file_path).unwrap();
         assert_eq!(read_content, content);
@@ -431,17 +431,17 @@ Second file:\n\
         let file_path = temp_dir.path().join("to_delete.txt");
 
         // Create file
-        CoderAgent::write_file(&file_path, "content").unwrap();
+        CoderAgent::write_file(&file_path, "content", None).unwrap();
         assert!(file_path.exists());
 
         // Delete file
-        CoderAgent::delete_file(&file_path).unwrap();
+        CoderAgent::delete_file(&file_path, None).unwrap();
         assert!(!file_path.exists());
     }
 
     #[test]
     fn test_delete_nonexistent_file() {
-        let result = CoderAgent::delete_file("/tmp/nonexistent_file_12345.txt");
+        let result = CoderAgent::delete_file("/tmp/nonexistent_file_12345.txt", None);
         assert!(result.is_err());
     }
 
@@ -590,7 +590,7 @@ Second file:\n\
             operation: FileOperation::Create,
         }];
 
-        let applied = CoderAgent::apply_changes(&changes).unwrap();
+        let applied = CoderAgent::apply_changes(&changes, None).unwrap();
         assert_eq!(applied.len(), 1);
         assert!(file_path.exists());
 
@@ -612,7 +612,7 @@ Second file:\n\
             operation: FileOperation::Update,
         }];
 
-        let applied = CoderAgent::apply_changes(&changes).unwrap();
+        let applied = CoderAgent::apply_changes(&changes, None).unwrap();
         assert_eq!(applied.len(), 1);
 
         let content = fs::read_to_string(&file_path).unwrap();
@@ -638,7 +638,7 @@ Second file:\n\
             },
         ];
 
-        let applied = CoderAgent::apply_changes(&changes).unwrap();
+        let applied = CoderAgent::apply_changes(&changes, None).unwrap();
         assert_eq!(applied.len(), 2);
         assert!(file1.exists());
         assert!(file2.exists());
@@ -659,7 +659,7 @@ Second file:\n\
             operation: FileOperation::Delete,
         }];
 
-        let applied = CoderAgent::apply_changes(&changes).unwrap();
+        let applied = CoderAgent::apply_changes(&changes, None).unwrap();
         assert_eq!(applied.len(), 1);
         assert!(!file_path.exists());
     }
@@ -803,7 +803,7 @@ Second file:\n\
             operation: FileOperation::Create,
         }];
 
-        CoderAgent::apply_changes(&changes).unwrap();
+        CoderAgent::apply_changes(&changes, None).unwrap();
 
         // Verify file was created and contains correct content
         let content = CoderAgent::read_file(&file_path).unwrap();
