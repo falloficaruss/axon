@@ -13,6 +13,58 @@ use crate::types::{Agent, Session, SessionMode};
 pub struct PopupRenderer;
 
 impl PopupRenderer {
+    /// Draw slash-command suggestions popup
+    pub fn draw_command_suggestions(
+        frame: &mut Frame,
+        suggestions: &[(&str, &str)],
+        selected_index: usize,
+    ) {
+        if suggestions.is_empty() {
+            return;
+        }
+
+        let visible_count = suggestions.len().min(8) as u16;
+        let height = visible_count + 2;
+        let width = frame.area().width.saturating_sub(16).clamp(40, 80);
+        let area = Rect {
+            x: 16.min(frame.area().width.saturating_sub(width)),
+            y: frame.area().height.saturating_sub(height + 4),
+            width,
+            height,
+        };
+
+        let block = Block::default()
+            .title("Commands")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+
+        let items: Vec<ListItem> = suggestions
+            .iter()
+            .enumerate()
+            .take(visible_count as usize)
+            .map(|(i, (command, description))| {
+                let style = if i == selected_index {
+                    Style::default()
+                        .bg(Color::Yellow)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                ListItem::new(Line::from(vec![
+                    ratatui::text::Span::styled(format!("{:<18}", command), style),
+                    ratatui::text::Span::styled(*description, style),
+                ]))
+            })
+            .collect();
+
+        let list = List::new(items).block(block);
+
+        frame.render_widget(Clear, area);
+        frame.render_widget(list, area);
+    }
+
     /// Draw agent selector popup
     pub fn draw_agent_selector(frame: &mut Frame, agents: &[Agent], selected_index: usize) {
         let area = Self::centered_rect(60, 60, frame.area());

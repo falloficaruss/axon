@@ -171,6 +171,8 @@ pub struct App {
     agent_selected_index: usize,
     /// Pending confirmation request
     pending_confirmation: Option<PendingConfirmation>,
+    /// Selected slash-command suggestion index
+    command_selected_index: usize,
 }
 
 /// Application modes
@@ -286,6 +288,7 @@ impl App {
             cached_agents: Vec::new(),
             agent_selected_index: 0,
             pending_confirmation: None,
+            command_selected_index: 0,
         })
     }
 
@@ -450,6 +453,7 @@ impl App {
                         KeyCode::Char('/') if self.input.is_empty() => {
                             // Enter command mode without inserting the slash
                             self.mode = AppMode::Command;
+                            self.command_selected_index = 0;
                         }
                         KeyCode::Char(c) => {
                             self.input.insert_char(c);
@@ -485,13 +489,30 @@ impl App {
                     self.mode = AppMode::Normal;
                     self.input.clear();
                 }
+                KeyCode::Up => {
+                    if self.command_selected_index > 0 {
+                        self.command_selected_index -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    let suggestions = self.filtered_commands();
+                    if self.command_selected_index + 1 < suggestions.len() {
+                        self.command_selected_index += 1;
+                    }
+                }
+                KeyCode::Tab => {
+                    self.autocomplete_selected_command();
+                }
                 KeyCode::Char(c) => {
                     self.input.insert_char(c);
+                    self.command_selected_index = 0;
                 }
                 KeyCode::Backspace => {
                     self.input.delete_char();
                     if self.input.is_empty() {
                         self.mode = AppMode::Normal;
+                    } else {
+                        self.command_selected_index = 0;
                     }
                 }
                 KeyCode::Left => {
@@ -996,6 +1017,13 @@ impl App {
 
         // Draw overlays based on mode
         match self.mode {
+            AppMode::Command => {
+                let suggestions = self.filtered_commands();
+                let selected_index = self
+                    .command_selected_index
+                    .min(suggestions.len().saturating_sub(1));
+                PopupRenderer::draw_command_suggestions(frame, &suggestions, selected_index);
+            }
             AppMode::AgentSelect => {
                 PopupRenderer::draw_agent_selector(frame, &self.cached_agents, self.agent_selected_index);
             }
@@ -1035,6 +1063,62 @@ impl App {
     /// Draw status bar
     fn draw_status_bar(&self, _frame: &mut Frame) {
         // Now delegated to PopupRenderer
+    }
+
+    fn command_catalog() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("/help", "Show help"),
+            ("/mode auto", "Enable automatic routing"),
+            ("/mode manual", "Enable manual agent selection"),
+            ("/agent", "Select or inspect an agent"),
+            ("/agents", "List available agents"),
+            ("/clear", "Clear current session"),
+            ("/new", "Start a new session"),
+            ("/save", "Save current session"),
+            ("/load", "Load a saved session"),
+            ("/sessions", "List saved sessions"),
+            ("/delete", "Delete a saved session"),
+            ("/remember", "Store a memory value"),
+            ("/recall", "Fetch a memory value"),
+            ("/forget", "Delete a memory value"),
+            ("/cancel", "Cancel the running task"),
+            ("/quit", "Exit the app"),
+        ]
+    }
+
+    fn filtered_commands(&self) -> Vec<(&'static str, &'static str)> {
+        let query = self.input.get_content().trim().to_lowercase();
+        let slash_query = if query.starts_with('/') {
+            query.clone()
+        } else {
+            format!("/{}", query)
+        };
+
+        let mut commands: Vec<_> = Self::command_catalog()
+            .iter()
+            .copied()
+            .filter(|(command, _)| query.is_empty() || command.starts_with(&slash_query))
+            .collect();
+
+        if commands.is_empty() {
+            commands = Self::command_catalog().to_vec();
+        }
+
+        commands
+    }
+
+    fn autocomplete_selected_command(&mut self) {
+        let suggestions = self.filtered_commands();
+        if suggestions.is_empty() {
+            return;
+        }
+
+        let selected_index = self
+            .command_selected_index
+            .min(suggestions.len().saturating_sub(1));
+        let (command, _) = suggestions[selected_index];
+        let trimmed = command.trim_start_matches('/');
+        self.input.set_content(trimmed);
     }
 
     /// Calculate centered rectangle

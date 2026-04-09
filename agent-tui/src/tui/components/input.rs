@@ -89,6 +89,13 @@ impl Input {
         self.saved_input.clear();
     }
 
+    /// Replace the current input content and move the cursor to the end
+    pub fn set_content(&mut self, content: &str) {
+        self.content = content.to_string();
+        self.cursor = self.content.len();
+        self.history_index = None;
+    }
+
     /// Navigate to previous history entry
     pub fn previous_history(&mut self) {
         if self.history.is_empty() {
