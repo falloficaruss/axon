@@ -1,11 +1,12 @@
 use ratatui::{
     layout::{Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
+use crate::tui::theme;
 use crate::tui::markdown;
 use crate::types::{Message, MessageRole, Session};
 
@@ -70,11 +71,11 @@ impl Chat {
 
     /// Draw the chat component
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, session: &Session) {
-        let cyan = Color::Rgb(92, 225, 230);
-        let mint = Color::Rgb(111, 231, 183);
-        let gold = Color::Rgb(255, 193, 94);
-        let slate = Color::Rgb(94, 106, 130);
-        let cloud = Color::Rgb(224, 229, 236);
+        let cyan = theme::accent_cyan();
+        let mint = theme::accent_mint();
+        let gold = theme::accent_gold();
+        let slate = theme::text_subtle();
+        let cloud = theme::text_primary();
 
         let title = if self.is_streaming {
             format!(" CONVERSATION  {}  LIVE ", session.title)
@@ -85,7 +86,9 @@ impl Chat {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(cyan));
+            .border_set(ratatui::symbols::border::ROUNDED)
+            .border_style(Style::default().fg(cyan))
+            .style(Style::default().bg(theme::panel_bg()).fg(cloud));
 
         // Render all messages with markdown
         let mut all_lines: Vec<Line> = Vec::new();
@@ -101,6 +104,12 @@ impl Chat {
             all_lines.push(Line::from(""));
         }
         for message in &session.messages {
+            let divider = Line::from(Span::styled(
+                "  ─────────────────────────────────────────────────────────",
+                Style::default().fg(theme::border_soft()),
+            ));
+            all_lines.push(divider);
+
             // Header with timestamp and sender
             let (prefix, style) = match message.role {
                 MessageRole::User => (
@@ -130,10 +139,10 @@ impl Chat {
             let timestamp = message.timestamp.format("%H:%M:%S").to_string();
             let header = Line::from(vec![
                 Span::styled(
-                    format!("[{}] ", timestamp),
+                    format!(" {} ", timestamp),
                     Style::default().fg(slate),
                 ),
-                Span::styled(format!("{}  ", prefix), style),
+                Span::styled(format!("[{}] ", prefix), style),
             ]);
             all_lines.push(header);
 
@@ -184,6 +193,7 @@ impl Chat {
         let paragraph = Paragraph::new(Text::from(all_lines))
             .block(block)
             .wrap(Wrap { trim: true })
+            .style(Style::default().bg(theme::panel_bg()).fg(cloud))
             .scroll((self.scroll, 0));
 
         frame.render_widget(paragraph, area);

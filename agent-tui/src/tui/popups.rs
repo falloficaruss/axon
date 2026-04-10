@@ -2,26 +2,84 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 use std::collections::HashMap;
 
+use crate::tui::theme;
 use crate::tui::PendingConfirmation;
 use crate::types::{Agent, Session, SessionMode};
 
 pub struct PopupRenderer;
 
 impl PopupRenderer {
+    /// Draw the top application header
+    pub fn draw_header(frame: &mut Frame, session: &Session, task_running: bool, active_agent: Option<&Agent>) {
+        let area = Rect {
+            x: frame.area().x,
+            y: frame.area().y,
+            width: frame.area().width,
+            height: 3,
+        };
+
+        let mode_text = match session.mode {
+            SessionMode::Auto => "AUTO",
+            SessionMode::Manual => "MANUAL",
+        };
+
+        let agent_name = active_agent.map(|a| a.name.as_str()).unwrap_or("none");
+        let task_text = if task_running { "RUNNING" } else { "READY" };
+
+        let block = theme::glass_panel(" AXON ", theme::accent_cyan());
+        let content = vec![
+            Line::from(vec![
+                ratatui::text::Span::styled(
+                    "Axon",
+                    Style::default()
+                        .fg(theme::text_primary())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                ratatui::text::Span::styled(
+                    "  orchestration studio",
+                    Style::default().fg(theme::text_subtle()),
+                ),
+                ratatui::text::Span::raw("   "),
+                ratatui::text::Span::styled(
+                    format!("MODE {}", mode_text),
+                    Style::default()
+                        .fg(theme::accent_gold())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                ratatui::text::Span::raw("   "),
+                ratatui::text::Span::styled(
+                    format!("AGENT {}", agent_name),
+                    Style::default().fg(theme::accent_mint()),
+                ),
+                ratatui::text::Span::raw("   "),
+                ratatui::text::Span::styled(
+                    format!("STATUS {}", task_text),
+                    Style::default().fg(theme::accent_cyan()),
+                ),
+            ]),
+        ];
+
+        let paragraph = Paragraph::new(content)
+            .block(block)
+            .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()));
+
+        frame.render_widget(paragraph, area);
+    }
+
     /// Draw slash-command suggestions popup
     pub fn draw_command_suggestions(
         frame: &mut Frame,
         suggestions: &[(&str, &str)],
         selected_index: usize,
     ) {
-        let gold = Color::Rgb(255, 193, 94);
-        let cloud = Color::Rgb(224, 229, 236);
-        let slate = Color::Rgb(94, 106, 130);
+        let gold = theme::accent_gold();
+        let cloud = theme::text_primary();
+        let slate = theme::text_subtle();
 
         if suggestions.is_empty() {
             return;
@@ -29,18 +87,15 @@ impl PopupRenderer {
 
         let visible_count = suggestions.len().min(8) as u16;
         let height = visible_count + 2;
-        let width = frame.area().width.saturating_sub(16).clamp(40, 80);
+        let width = frame.area().width.saturating_sub(20).clamp(44, 84);
         let area = Rect {
-            x: 16.min(frame.area().width.saturating_sub(width)),
-            y: frame.area().height.saturating_sub(height + 4),
+            x: 18.min(frame.area().width.saturating_sub(width)),
+            y: frame.area().height.saturating_sub(height + 6),
             width,
             height,
         };
 
-        let block = Block::default()
-            .title(" AXON COMMANDS ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(gold));
+        let block = theme::glass_popup(" AXON COMMANDS ", gold);
 
         let items: Vec<ListItem> = suggestions
             .iter()
@@ -70,7 +125,9 @@ impl PopupRenderer {
             })
             .collect();
 
-        let list = List::new(items).block(block);
+        let list = List::new(items)
+            .block(block)
+            .style(Style::default().bg(theme::panel_bg_alt()).fg(cloud));
 
         frame.render_widget(Clear, area);
         frame.render_widget(list, area);
@@ -78,13 +135,10 @@ impl PopupRenderer {
 
     /// Draw agent selector popup
     pub fn draw_agent_selector(frame: &mut Frame, agents: &[Agent], selected_index: usize) {
-        let cyan = Color::Rgb(92, 225, 230);
+        let cyan = theme::accent_cyan();
         let area = Self::centered_rect(60, 60, frame.area());
 
-        let block = Block::default()
-            .title(" SELECT AGENT ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(cyan));
+        let block = theme::glass_popup(" SELECT AGENT ", cyan);
 
         let mut text: Vec<Line> = vec![Line::from("Available agents:"), Line::from("")];
 
@@ -110,6 +164,7 @@ impl PopupRenderer {
         text.push(Line::from("Press number to select, ESC to cancel"));
 
         let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
+        let paragraph = paragraph.style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()));
 
         frame.render_widget(Clear, area);
         frame.render_widget(paragraph, area);
@@ -117,16 +172,13 @@ impl PopupRenderer {
 
     /// Draw confirmation dialog popup
     pub fn draw_confirmation_dialog(frame: &mut Frame, pending: Option<&PendingConfirmation>) {
+        let magenta = Color::Rgb(222, 152, 255);
         let area = Self::centered_rect(70, 70, frame.area());
 
-        let block = Block::default()
-            .title(pending.map(|p| p.title.as_str()).unwrap_or("Confirmation"))
-            .borders(Borders::ALL)
-            .border_style(
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            );
+        let block = theme::glass_popup(
+            pending.map(|p| p.title.as_str()).unwrap_or("Confirmation"),
+            magenta,
+        );
 
         let mut text = Vec::new();
 
@@ -193,10 +245,7 @@ impl PopupRenderer {
     ) {
         let area = Self::centered_rect(80, 80, frame.area());
 
-        let block = Block::default()
-            .title("Memory Manager")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
+        let block = theme::glass_popup(" MEMORY MANAGER ", theme::accent_gold());
 
         if keys.is_empty() {
             let text = vec![
@@ -205,7 +254,10 @@ impl PopupRenderer {
                 Line::from("Press ESC or 'q' to close, 'r' to refresh"),
             ];
 
-            let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
+            let paragraph = Paragraph::new(text)
+                .block(block)
+                .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()))
+                .wrap(Wrap { trim: true });
 
             frame.render_widget(Clear, area);
             frame.render_widget(paragraph, area);
@@ -232,7 +284,7 @@ impl PopupRenderer {
                 .collect();
 
             let list = List::new(items)
-                .block(Block::default().title(" Keys ").borders(Borders::ALL))
+                .block(theme::glass_popup(" KEYS ", theme::accent_gold()))
                 .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
             frame.render_widget(Clear, area);
@@ -246,11 +298,8 @@ impl PopupRenderer {
                     .unwrap_or("Value not found (Press Enter to try fetching again or add to chat)");
 
                 let paragraph = Paragraph::new(value_text)
-                    .block(
-                        Block::default()
-                            .title(format!(" Value: {} (Press Enter to add to chat) ", key))
-                            .borders(Borders::ALL),
-                    )
+                    .block(theme::glass_popup(" VALUE ", theme::accent_cyan()))
+                    .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()))
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, list_layout[1]);
             }
@@ -259,8 +308,8 @@ impl PopupRenderer {
 
     /// Draw status bar
     pub fn draw_status_bar(frame: &mut Frame, session: &Session) {
-        let cloud = Color::Rgb(224, 229, 236);
-        let navy = Color::Rgb(18, 30, 46);
+        let cloud = theme::text_primary();
+        let navy = theme::status_bg();
         let status_area = Rect {
             x: frame.area().x,
             y: frame.area().height - 1,
@@ -274,7 +323,7 @@ impl PopupRenderer {
         };
 
         let status = format!(
-            " AXON  |  MODE {}  |  MSG {}  |  / commands  |  Ctrl+B sidebar  |  Ctrl+C quit ",
+            "  MODE {}  |  {} messages  |  / commands  |  Tab focus  |  Ctrl+B rail  |  Ctrl+C quit  ",
             mode_text,
             session.messages.len()
         );

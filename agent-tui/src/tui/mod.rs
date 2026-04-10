@@ -3,6 +3,7 @@ pub mod markdown;
 pub mod session_manager;
 pub mod command_handler;
 pub mod popups;
+pub mod theme;
 
 use anyhow::Result;
 use crossterm::{
@@ -13,6 +14,8 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
+    widgets::Block,
     Frame, Terminal,
 };
 use std::io;
@@ -986,15 +989,34 @@ impl App {
     /// Draw the UI
     fn draw(&mut self, frame: &mut Frame) {
         use self::popups::PopupRenderer;
+        use self::theme;
+
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::app_bg())),
+            frame.area(),
+        );
+
+        let shell = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+            .margin(1)
+            .split(frame.area());
+
+        PopupRenderer::draw_header(
+            frame,
+            &self.session_manager.session,
+            self.task_state.is_running(),
+            self.active_agent.as_ref(),
+        );
 
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(if self.show_sidebar {
-                vec![Constraint::Percentage(20), Constraint::Percentage(80)]
+                vec![Constraint::Length(30), Constraint::Min(0)]
             } else {
                 vec![Constraint::Percentage(0), Constraint::Percentage(100)]
             })
-            .split(frame.area());
+            .split(shell[1]);
 
         // Sidebar
         if self.show_sidebar {
@@ -1006,7 +1028,8 @@ impl App {
         // Main content area
         let content_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .constraints([Constraint::Min(0), Constraint::Length(4)])
+            .margin(1)
             .split(main_layout[1]);
 
         // Chat area

@@ -2,13 +2,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph},
     Frame,
 };
 
 use chrono::{DateTime, Local};
 
 use crate::persistence::SessionMetadata;
+use crate::tui::theme;
 use crate::types::{Agent, AgentState, Session, SessionMode};
 
 /// Sidebar component for displaying sessions and agents
@@ -68,8 +69,9 @@ impl Sidebar {
             let refresh_text = format!("Refreshed: {}", ts.format("%H:%M:%S"));
             let paragraph = Paragraph::new(Line::from(vec![Span::styled(
                 refresh_text,
-                Style::default().fg(Color::DarkGray),
-            )]));
+                Style::default().fg(theme::text_subtle()),
+            )]))
+            .style(Style::default().bg(theme::app_bg()));
             frame.render_widget(paragraph, layout[2]);
         }
     }
@@ -83,17 +85,14 @@ impl Sidebar {
         agents: &[Agent],
         active_agent: Option<&Agent>,
     ) {
-        let slate = Color::Rgb(94, 106, 130);
-        let cyan = Color::Rgb(92, 225, 230);
-        let mint = Color::Rgb(111, 231, 183);
-        let gold = Color::Rgb(255, 193, 94);
-        let coral = Color::Rgb(255, 107, 107);
-        let cloud = Color::Rgb(224, 229, 236);
+        let slate = theme::text_subtle();
+        let cyan = theme::accent_cyan();
+        let mint = theme::accent_mint();
+        let gold = theme::accent_gold();
+        let coral = theme::accent_coral();
+        let cloud = theme::text_primary();
 
-        let block = Block::default()
-            .title(" AXON CONTROL ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(cyan));
+        let block = theme::glass_panel(" AXON CONTROL ", cyan);
 
         let mut lines = vec![];
         lines.push(Line::from(vec![
@@ -158,7 +157,9 @@ impl Sidebar {
             ),
         ]));
 
-        let paragraph = Paragraph::new(Text::from(lines)).block(block);
+        let paragraph = Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(Style::default().bg(theme::panel_bg()).fg(cloud));
 
         frame.render_widget(paragraph, area);
     }
@@ -171,20 +172,17 @@ impl Sidebar {
         sessions: &[SessionMetadata],
         current_session_id: &str,
     ) {
-        let cyan = Color::Rgb(92, 225, 230);
-        let gold = Color::Rgb(255, 193, 94);
-        let cloud = Color::Rgb(224, 229, 236);
-        let slate = Color::Rgb(94, 106, 130);
+        let cyan = theme::accent_cyan();
+        let gold = theme::accent_gold();
+        let cloud = theme::text_primary();
+        let slate = theme::text_subtle();
 
         let border_color = if self.focused {
             gold
         } else {
             cyan
         };
-        let block = Block::default()
-            .title(" SESSIONS ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
+        let block = theme::glass_panel(" SESSIONS ", border_color);
 
         let items: Vec<ListItem> = sessions
             .iter()
@@ -221,7 +219,8 @@ impl Sidebar {
 
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+            .style(Style::default().bg(theme::panel_bg()).fg(cloud));
 
         frame.render_widget(list, area);
     }

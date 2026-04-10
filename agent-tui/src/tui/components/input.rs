@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::tui::AppMode;
+use crate::tui::theme;
 
 /// Input component for text entry
 pub struct Input {
@@ -154,15 +155,17 @@ impl Input {
     /// Draw the input component
     pub fn draw(&self, frame: &mut Frame, area: Rect, mode: AppMode) {
         let (title, border_color) = match mode {
-            AppMode::Command => (" Command (press ESC to cancel) ", Color::Yellow),
-            AppMode::Normal => (" Input ", Color::White),
-            _ => (" Input ", Color::White),
+            AppMode::Command => (" COMMAND ", theme::accent_gold()),
+            AppMode::Normal => (" INPUT ", theme::accent_cyan()),
+            _ => (" INPUT ", theme::accent_cyan()),
         };
 
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
+            .border_set(ratatui::symbols::border::ROUNDED)
+            .border_style(Style::default().fg(border_color))
+            .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()));
 
         // Create text with cursor
         let mut spans = vec![];
@@ -181,7 +184,7 @@ impl Input {
         spans.push(Span::styled(
             cursor_char,
             Style::default()
-                .bg(Color::White)
+                .bg(theme::text_primary())
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         ));
@@ -193,7 +196,10 @@ impl Input {
 
         let text = Text::from(Line::from(spans));
 
-        let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Left);
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()))
+            .alignment(Alignment::Left);
 
         frame.render_widget(paragraph, area);
     }
