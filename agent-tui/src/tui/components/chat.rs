@@ -70,26 +70,43 @@ impl Chat {
 
     /// Draw the chat component
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, session: &Session) {
+        let cyan = Color::Rgb(92, 225, 230);
+        let mint = Color::Rgb(111, 231, 183);
+        let gold = Color::Rgb(255, 193, 94);
+        let slate = Color::Rgb(94, 106, 130);
+        let cloud = Color::Rgb(224, 229, 236);
+
         let title = if self.is_streaming {
-            format!(" Chat - {} - Streaming... ", session.title)
+            format!(" CONVERSATION  {}  LIVE ", session.title)
         } else {
-            format!(" Chat - {} ", session.title)
+            format!(" CONVERSATION  {} ", session.title)
         };
 
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White));
+            .border_style(Style::default().fg(cyan));
 
         // Render all messages with markdown
         let mut all_lines: Vec<Line> = Vec::new();
+        if session.messages.is_empty() {
+            all_lines.push(Line::from(Span::styled(
+                "  Welcome to Axon. Start a conversation or press / for commands.",
+                Style::default().fg(cloud).add_modifier(Modifier::BOLD),
+            )));
+            all_lines.push(Line::from(Span::styled(
+                "  Auto mode routes work for you. Manual mode lets you pick the agent.",
+                Style::default().fg(slate),
+            )));
+            all_lines.push(Line::from(""));
+        }
         for message in &session.messages {
             // Header with timestamp and sender
             let (prefix, style) = match message.role {
                 MessageRole::User => (
-                    "You",
+                    "YOU",
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(mint)
                         .add_modifier(Modifier::BOLD),
                 ),
                 MessageRole::Agent => {
@@ -97,14 +114,14 @@ impl Chat {
                     (
                         agent_name,
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(cyan)
                             .add_modifier(Modifier::BOLD),
                     )
                 }
                 MessageRole::System => (
-                    "System",
+                    "SYSTEM",
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(gold)
                         .add_modifier(Modifier::BOLD),
                 ),
             };
@@ -114,9 +131,9 @@ impl Chat {
             let header = Line::from(vec![
                 Span::styled(
                     format!("[{}] ", timestamp),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(slate),
                 ),
-                Span::styled(format!("{}:", prefix), style),
+                Span::styled(format!("{}  ", prefix), style),
             ]);
             all_lines.push(header);
 
@@ -149,7 +166,7 @@ impl Chat {
             all_lines.push(Line::from(Span::styled(
                 "  ▌",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(cyan)
                     .add_modifier(Modifier::BOLD),
             )));
         }

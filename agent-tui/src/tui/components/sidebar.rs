@@ -83,54 +83,78 @@ impl Sidebar {
         agents: &[Agent],
         active_agent: Option<&Agent>,
     ) {
+        let slate = Color::Rgb(94, 106, 130);
+        let cyan = Color::Rgb(92, 225, 230);
+        let mint = Color::Rgb(111, 231, 183);
+        let gold = Color::Rgb(255, 193, 94);
+        let coral = Color::Rgb(255, 107, 107);
+        let cloud = Color::Rgb(224, 229, 236);
+
         let block = Block::default()
-            .title(" Agents ")
+            .title(" AXON CONTROL ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(cyan));
 
         let mut lines = vec![];
         lines.push(Line::from(vec![
-            Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Axon",
+                Style::default()
+                    .fg(cloud)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  command center", Style::default().fg(slate)),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Mode  ", Style::default().fg(slate).add_modifier(Modifier::BOLD)),
             Span::styled(
                 match session.mode {
                     SessionMode::Auto => "AUTO",
                     SessionMode::Manual => "MANUAL",
                 },
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(gold).add_modifier(Modifier::BOLD),
             ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Session ", Style::default().fg(slate).add_modifier(Modifier::BOLD)),
+            Span::styled(session.title.as_str(), Style::default().fg(cloud)),
         ]));
         lines.push(Line::from(""));
 
         // Show all agents from registry with their states
         for agent in agents {
             let (icon, color) = match agent.state {
-                AgentState::Idle => ("○", Color::Gray),
-                AgentState::Running => ("●", Color::Green),
-                AgentState::Completed => ("✓", Color::Blue),
-                AgentState::Failed => ("✗", Color::Red),
+                AgentState::Idle => ("ID", slate),
+                AgentState::Running => ("RN", mint),
+                AgentState::Completed => ("OK", cyan),
+                AgentState::Failed => ("ER", coral),
             };
 
             // Highlight active agent
             let name_style = if active_agent.map(|a| a.id == agent.id).unwrap_or(false) {
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(cloud)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(slate)
             };
 
             lines.push(Line::from(vec![
-                Span::styled(format!("{} ", icon), Style::default().fg(color)),
+                Span::styled(
+                    format!("[{}] ", icon),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(&agent.name, name_style),
             ]));
         }
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("Active: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Active  ", Style::default().fg(slate).add_modifier(Modifier::BOLD)),
             Span::styled(
                 active_agent.map(|a| a.name.as_str()).unwrap_or("None"),
-                Style::default().fg(Color::Green),
+                Style::default().fg(mint).add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -147,13 +171,18 @@ impl Sidebar {
         sessions: &[SessionMetadata],
         current_session_id: &str,
     ) {
+        let cyan = Color::Rgb(92, 225, 230);
+        let gold = Color::Rgb(255, 193, 94);
+        let cloud = Color::Rgb(224, 229, 236);
+        let slate = Color::Rgb(94, 106, 130);
+
         let border_color = if self.focused {
-            Color::Yellow
+            gold
         } else {
-            Color::Cyan
+            cyan
         };
         let block = Block::default()
-            .title(" Sessions ")
+            .title(" SESSIONS ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 
@@ -167,16 +196,20 @@ impl Sidebar {
                 let mut style = Style::default();
                 if is_selected {
                     let bg = if self.focused {
-                        Color::Yellow
+                        gold
                     } else {
-                        Color::Black
+                        Color::Rgb(33, 43, 60)
                     };
                     let fg = if self.focused {
                         Color::Black
                     } else {
-                        Color::White
+                        cloud
                     };
                     style = style.bg(bg).fg(fg).add_modifier(Modifier::BOLD);
+                } else if is_current {
+                    style = style.fg(cyan);
+                } else {
+                    style = style.fg(slate);
                 }
 
                 let prefix = if is_current { "* " } else { "  " };

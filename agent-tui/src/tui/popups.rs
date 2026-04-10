@@ -19,6 +19,10 @@ impl PopupRenderer {
         suggestions: &[(&str, &str)],
         selected_index: usize,
     ) {
+        let gold = Color::Rgb(255, 193, 94);
+        let cloud = Color::Rgb(224, 229, 236);
+        let slate = Color::Rgb(94, 106, 130);
+
         if suggestions.is_empty() {
             return;
         }
@@ -34,9 +38,9 @@ impl PopupRenderer {
         };
 
         let block = Block::default()
-            .title("Commands")
+            .title(" AXON COMMANDS ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
+            .border_style(Style::default().fg(gold));
 
         let items: Vec<ListItem> = suggestions
             .iter()
@@ -45,16 +49,23 @@ impl PopupRenderer {
             .map(|(i, (command, description))| {
                 let style = if i == selected_index {
                     Style::default()
-                        .bg(Color::Yellow)
+                        .bg(gold)
                         .fg(Color::Black)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default()
+                    Style::default().fg(cloud)
                 };
 
                 ListItem::new(Line::from(vec![
                     ratatui::text::Span::styled(format!("{:<18}", command), style),
-                    ratatui::text::Span::styled(*description, style),
+                    ratatui::text::Span::styled(
+                        format!("  {}", description),
+                        if i == selected_index {
+                            style
+                        } else {
+                            Style::default().fg(slate)
+                        },
+                    ),
                 ]))
             })
             .collect();
@@ -67,12 +78,13 @@ impl PopupRenderer {
 
     /// Draw agent selector popup
     pub fn draw_agent_selector(frame: &mut Frame, agents: &[Agent], selected_index: usize) {
+        let cyan = Color::Rgb(92, 225, 230);
         let area = Self::centered_rect(60, 60, frame.area());
 
         let block = Block::default()
-            .title("Select Agent")
+            .title(" SELECT AGENT ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(cyan));
 
         let mut text: Vec<Line> = vec![Line::from("Available agents:"), Line::from("")];
 
@@ -247,6 +259,8 @@ impl PopupRenderer {
 
     /// Draw status bar
     pub fn draw_status_bar(frame: &mut Frame, session: &Session) {
+        let cloud = Color::Rgb(224, 229, 236);
+        let navy = Color::Rgb(18, 30, 46);
         let status_area = Rect {
             x: frame.area().x,
             y: frame.area().height - 1,
@@ -260,13 +274,17 @@ impl PopupRenderer {
         };
 
         let status = format!(
-            " [{}] | Messages: {} | Ctrl+C: quit | Ctrl+B: sidebar | /help: commands ",
+            " AXON  |  MODE {}  |  MSG {}  |  / commands  |  Ctrl+B sidebar  |  Ctrl+C quit ",
             mode_text,
             session.messages.len()
         );
 
-        let status_bar =
-            Paragraph::new(status).style(Style::default().bg(Color::Blue).fg(Color::White));
+        let status_bar = Paragraph::new(status).style(
+            Style::default()
+                .bg(navy)
+                .fg(cloud)
+                .add_modifier(Modifier::BOLD),
+        );
 
         frame.render_widget(status_bar, status_area);
     }
