@@ -6,8 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::AppMode;
 use crate::tui::theme;
+use crate::tui::AppMode;
 
 /// Input component for text entry
 pub struct Input {
@@ -21,6 +21,34 @@ pub struct Input {
     history_index: Option<usize>,
     /// Saved input when navigating history
     saved_input: String,
+    /// Current autocomplete matches
+    autocomplete_matches: Vec<String>,
+    /// Current autocomplete selection index
+    autocomplete_index: usize,
+    /// Whether autocomplete is active
+    autocomplete_active: bool,
+}
+
+impl Input {
+    const COMMANDS: &'static [&'static str] = &[
+        "/help",
+        "/mode auto",
+        "/mode manual",
+        "/agent",
+        "/agents",
+        "/clear",
+        "/new",
+        "/save",
+        "/load",
+        "/sessions",
+        "/delete",
+        "/remember",
+        "/recall",
+        "/forget",
+        "/cancel",
+        "/quit",
+        "/exit",
+    ];
 }
 
 impl Input {
@@ -31,6 +59,9 @@ impl Input {
             history: vec![],
             history_index: None,
             saved_input: String::new(),
+            autocomplete_matches: vec![],
+            autocomplete_index: 0,
+            autocomplete_active: false,
         }
     }
 
@@ -145,11 +176,86 @@ impl Input {
         }
     }
 
-    /// Autocomplete (placeholder)
-    pub fn autocomplete(&mut self) {
-        // TODO: Implement autocomplete logic
-        // For now, just insert a tab
-        self.insert_char('\t');
+    /// Autocomplete commands based on current input
+    pub fn autocomplete(&mut self) -> Option<String> {
+        // Reset autocomplete if input changed
+        self.autocomplete_matches.clear();
+        self.autocomplete_index = 0;
+
+        // Find matching commands
+        let input_lower = self.content.to_lowercase();
+
+        // If there's a space, try to complete the argument
+        if input_lower.contains(' ') {
+            let parts: Vec<&str> = input_lower.split_whitespace().collect();
+            if let Some(cmd) = parts.first() {
+                match *cmd {
+                    "/mode" => {
+                        let suggestions = ["auto", "manual"];
+                        self.autocomplete_matches = suggestions
+                            .iter()
+                            .filter(|s| s.starts_with(parts.get(1).unwrap_or(&"")))
+                            .map(|s| format!("/mode {}", s))
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            // Match commands at start
+            self.autocomplete_matches = Self::COMMANDS
+                .iter()
+                .filter(|c| c.to_lowercase().starts_with(&input_lower))
+                .map(|s| s.to_string())
+                .collect();
+        }
+
+        if self.autocomplete_matches.is_empty() {
+            return None;
+        }
+
+        // Return first match
+        Some(self.autocomplete_matches[0].clone())
+    }
+
+    /// Cycle to next autocomplete match
+    pub fn autocomplete_next(&mut self) -> Option<String> {
+        if self.autocomplete_matches.is_empty() {
+            return None;
+        }
+
+        self.autocomplete_index = (self.autocomplete_index + 1) % self.autocomplete_matches.len();
+        Some(self.autocomplete_matches[self.autocomplete_index].clone())
+    }
+
+    /// Cycle to previous autocomplete match
+    pub fn autocomplete_prev(&mut self) -> Option<String> {
+        if self.autocomplete_matches.is_empty() {
+            return None;
+        }
+
+        if self.autocomplete_index == 0 {
+            self.autocomplete_index = self.autocomplete_matches.len() - 1;
+        } else {
+            self.autocomplete_index -= 1;
+        }
+        Some(self.autocomplete_matches[self.autocomplete_index].clone())
+    }
+
+    /// Check if autocomplete is active
+    pub fn is_autocomplete_active(&self) -> bool {
+        !self.autocomplete_matches.is_empty()
+    }
+
+    /// Get current autocomplete matches for display
+    pub fn get_autocomplete_matches(&self) -> &[String] {
+        &self.autocomplete_matches
+    }
+
+    /// Clear autocomplete state
+    pub fn clear_autocomplete(&mut self) {
+        self.autocomplete_matches.clear();
+        self.autocomplete_index = 0;
     }
 
     /// Draw the input component
@@ -165,7 +271,11 @@ impl Input {
             .borders(Borders::ALL)
             .border_set(ratatui::symbols::border::ROUNDED)
             .border_style(Style::default().fg(border_color))
-            .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()));
+            .style(
+                Style::default()
+                    .bg(theme::panel_bg_alt())
+                    .fg(theme::text_primary()),
+            );
 
         // Create text with cursor
         let mut spans = vec![];
@@ -198,7 +308,11 @@ impl Input {
 
         let paragraph = Paragraph::new(text)
             .block(block)
-            .style(Style::default().bg(theme::panel_bg_alt()).fg(theme::text_primary()))
+            .style(
+                Style::default()
+                    .bg(theme::panel_bg_alt())
+                    .fg(theme::text_primary()),
+            )
             .alignment(Alignment::Left);
 
         frame.render_widget(paragraph, area);
@@ -448,8 +562,49 @@ mod tests {
     #[test]
     fn test_input_autocomplete() {
         let mut input = Input::new();
-        input.autocomplete();
-        assert_eq!(input.content, "\t");
-        assert_eq!(input.cursor, 1);
+
+        // Test empty input - should match all commands
+        let result = input.autocomplete();
+        assert!(result.is_some());
+
+        // Test partial input matching
+        input.content = "/h".to_string();
+        input.cursor = 2;
+        let result = input.autocomplete();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "/help");
+    }
+
+    #[test]
+    fn test_autocomplete_next() {
+        let mut input = Input::new();
+        input.content = "/m".to_string();
+        input.cursor = 2;
+        let _ = input.autocomplete();
+
+        let next = input.autocomplete_next();
+        assert!(next.is_some());
+    }
+
+    #[test]
+    fn test_autocomplete_prev() {
+        let mut input = Input::new();
+        input.content = "/m".to_string();
+        input.cursor = 2;
+        let _ = input.autocomplete();
+
+        let prev = input.autocomplete_prev();
+        assert!(prev.is_some());
+    }
+
+    #[test]
+    fn test_autocomplete_clear() {
+        let mut input = Input::new();
+        input.content = "/m".to_string();
+        let _ = input.autocomplete();
+        assert!(input.is_autocomplete_active());
+
+        input.clear_autocomplete();
+        assert!(!input.is_autocomplete_active());
     }
 }

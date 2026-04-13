@@ -449,8 +449,8 @@ impl App {
                         KeyCode::Tab => {
                             if self.show_sidebar {
                                 self.mode = AppMode::Sidebar;
-                            } else {
-                                self.input.autocomplete();
+                            } else if let Some(completion) = self.input.autocomplete() {
+                                self.input.set_content(&completion);
                             }
                         }
                         KeyCode::Char('/') if self.input.is_empty() => {
@@ -460,12 +460,14 @@ impl App {
                         }
                         KeyCode::Char(c) => {
                             self.input.insert_char(c);
+                            self.input.clear_autocomplete();
                         }
                         KeyCode::Backspace => {
                             self.input.delete_char();
                             if self.input.is_empty() {
                                 self.mode = AppMode::Normal;
                             }
+                            self.input.clear_autocomplete();
                         }
                         KeyCode::Left => {
                             self.input.move_cursor_left();
