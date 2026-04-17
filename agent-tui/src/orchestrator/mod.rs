@@ -547,7 +547,15 @@ impl Orchestrator {
             // Simple task - create a single-step plan
             info!("Task is simple, executing directly...");
             let mut plan = Plan::new(task.clone());
-            let subtask = Subtask::new(&task.description, analysis.task_type);
+            let mut subtask = Subtask::new(&task.description, analysis.task_type);
+            
+            // Extract the suggested agent from the analysis to prevent re-routing later
+            if let Some((agent_id, confidence)) = analysis.suggested_agents.first() {
+                if *confidence > crate::orchestrator::AGENT_CONFIDENCE_THRESHOLD {
+                    subtask.suggested_agent = Some(agent_id.clone());
+                }
+            }
+            
             plan.subtasks = vec![subtask];
             plan
         };
