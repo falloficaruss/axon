@@ -51,6 +51,7 @@ impl Chat {
     /// Clear the chat display
     pub fn clear(&mut self) {
         self.scroll = 0;
+        self.auto_scroll = true;
         self.scroll_state = ScrollbarState::new(0);
         self.is_streaming = false;
     }
@@ -66,7 +67,22 @@ impl Chat {
     pub fn scroll_down(&mut self, amount: u16) {
         self.scroll = self.scroll.saturating_add(amount);
         self.scroll_state = self.scroll_state.position(self.scroll as usize);
-        // TODO: Check if at bottom to re-enable auto-scroll
+    }
+
+    fn apply_scroll_bounds(&mut self, content_height: usize, viewport_height: usize) {
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        let bounded_scroll = (self.scroll as usize)
+            .min(max_scroll)
+            .min(u16::MAX as usize) as u16;
+
+        if self.auto_scroll {
+            self.scroll = max_scroll.min(u16::MAX as usize) as u16;
+        } else {
+            self.scroll = bounded_scroll;
+            if self.scroll as usize >= max_scroll {
+                self.auto_scroll = true;
+            }
+        }
     }
 
     /// Draw the chat component
@@ -182,13 +198,7 @@ impl Chat {
 
         let content_height = all_lines.len();
         let viewport_height = area.height.saturating_sub(2) as usize;
-        let max_scroll = content_height.saturating_sub(viewport_height);
-
-        if self.auto_scroll {
-            self.scroll = max_scroll.min(u16::MAX as usize) as u16;
-        } else if self.scroll as usize > max_scroll {
-            self.scroll = max_scroll.min(u16::MAX as usize) as u16;
-        }
+        self.apply_scroll_bounds(content_height, viewport_height);
 
         let paragraph = Paragraph::new(Text::from(all_lines))
             .block(block)
@@ -230,6 +240,7 @@ impl Default for Chat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
     #[test]
     fn test_chat_new() {
         let chat = Chat::new();
@@ -280,6 +291,7 @@ mod tests {
         chat.clear();
 
         assert_eq!(chat.scroll, 0);
+        assert!(chat.auto_scroll);
         assert!(!chat.is_streaming);
     }
 
@@ -324,5 +336,48 @@ mod tests {
 
         // Verify scroll was updated
         assert_eq!(chat.scroll, 80);
+    }
+
+    #[test]
+    fn test_chat_scroll_down_reenables_auto_scroll_at_bottom() {
+        let mut chat = Chat::new();
+        let mut session = Session::new("Test");
+        for idx in 0..5 {
+            session.add_message(Message::user(&format!("Message {idx}")));
+        }
+
+        chat.auto_scroll = false;
+        chat.scroll = 2;
+        chat.scroll_down(100);
+
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).expect("test backend should initialize");
+        terminal
+            .draw(|frame| chat.draw(frame, frame.area(), &session))
+            .expect("chat should render");
+
+        assert!(chat.auto_scroll);
+        assert!(chat.scroll < u16::MAX);
+    }
+
+    #[test]
+    fn test_chat_keeps_auto_scroll_disabled_when_not_at_bottom() {
+        let mut chat = Chat::new();
+        let mut session = Session::new("Test");
+        for idx in 0..5 {
+            session.add_message(Message::user(&format!("Message {idx}")));
+        }
+
+        chat.auto_scroll = false;
+        chat.scroll = 1;
+
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).expect("test backend should initialize");
+        terminal
+            .draw(|frame| chat.draw(frame, frame.area(), &session))
+            .expect("chat should render");
+
+        assert!(!chat.auto_scroll);
+        assert_eq!(chat.scroll, 1);
     }
 }
