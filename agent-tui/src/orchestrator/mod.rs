@@ -121,11 +121,11 @@ impl Router {
     }
 
     /// Make a routing decision
-    pub async fn route(&self, task: Task, analysis: RoutingAnalysis) -> Result<RoutingDecision> {
+    pub async fn route(&self, task: Task, analysis: RoutingAnalysis, threshold: f32) -> Result<RoutingDecision> {
         // Simple routing logic: pick agents with high confidence
         let selected_agents: Vec<Id> = analysis.suggested_agents
             .iter()
-            .filter(|(_, conf)| *conf > AGENT_CONFIDENCE_THRESHOLD)
+            .filter(|(_, conf)| *conf > threshold)
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -507,6 +507,8 @@ pub struct Orchestrator {
     executor: Executor,
     /// Workspace root for file operations
     workspace_root: Option<std::path::PathBuf>,
+    /// Confidence threshold for agent selection
+    confidence_threshold: f32,
 }
 
 impl Orchestrator {
@@ -518,6 +520,7 @@ impl Orchestrator {
         event_tx: mpsc::Sender<AgentEvent>,
         max_concurrent: usize,
         workspace_root: Option<std::path::PathBuf>,
+        confidence_threshold: f32,
     ) -> Self {
         Self {
             llm_client: llm_client.clone(),
@@ -527,6 +530,7 @@ impl Orchestrator {
             planner: Planner::new(Some(llm_client.clone())),
             executor: Executor::new(llm_client, shared_memory, event_tx, max_concurrent, workspace_root.clone()),
             workspace_root,
+            confidence_threshold,
         }
     }
 
@@ -551,7 +555,7 @@ impl Orchestrator {
             
             // Extract the suggested agent from the analysis to prevent re-routing later
             if let Some((agent_id, confidence)) = analysis.suggested_agents.first() {
-                if *confidence > crate::orchestrator::AGENT_CONFIDENCE_THRESHOLD {
+                if *confidence > self.confidence_threshold {
                     subtask.suggested_agent = Some(agent_id.clone());
                 }
             }
@@ -609,6 +613,7 @@ impl Orchestrator {
                         subtask,
                         &session_clone,
                         dep_results,
+                        self.confidence_threshold,
                     ).await;
                     (subtask_id, res)
                 });
@@ -687,7 +692,18 @@ impl Orchestrator {
                 self.workspace_root.clone(),
             ),
             workspace_root: self.workspace_root.clone(),
+            confidence_threshold: self.confidence_threshold,
         }
+    }
+
+    /// Get the confidence threshold
+    pub fn confidence_threshold(&self) -> f32 {
+        self.confidence_threshold
+    }
+
+    /// Set a new confidence threshold at runtime
+    pub fn set_confidence_threshold(&mut self, threshold: f32) {
+        self.confidence_threshold = threshold.clamp(0.0, 1.0);
     }
 
     /// Internal subtask execution for parallel tasks
@@ -708,10 +724,10 @@ impl Orchestrator {
             let temp_task = Task::new(&subtask.description, subtask.task_type);
             let registry = self.registry.read().await;
             let analysis = self.router.analyze(self.llm_client.clone(), &registry, &temp_task, session).await?;
-            let decision = self.router.route(temp_task, analysis).await?;
+            let decision = self.router.route(temp_task, analysis, self.confidence_threshold).await?;
 
             // Only pick the agent if confidence is high enough
-            if decision.confidence > AGENT_CONFIDENCE_THRESHOLD && !decision.selected_agents.is_empty() {
+            if decision.confidence > self.confidence_threshold && !decision.selected_agents.is_empty() {
                 let agent_id = &decision.selected_agents[0];
                 let registry = self.registry.read().await;
                 registry.get_by_id(agent_id).cloned()
@@ -753,6 +769,7 @@ impl Orchestrator {
         subtask: Subtask,
         session: &Session,
         dependency_results: HashMap<Id, TaskResult>,
+        confidence_threshold: f32,
     ) -> Result<TaskResult> {
         info!("Executing subtask with shared executor: {}", subtask.description);
 
@@ -764,9 +781,9 @@ impl Orchestrator {
             let temp_task = Task::new(&subtask.description, subtask.task_type);
             let reg = registry.read().await;
             let analysis = router.analyze(llm_client.clone(), &reg, &temp_task, session).await?;
-            let decision = router.route(temp_task, analysis).await?;
+            let decision = router.route(temp_task, analysis, confidence_threshold).await?;
 
-            if decision.confidence > AGENT_CONFIDENCE_THRESHOLD && !decision.selected_agents.is_empty() {
+            if decision.confidence > confidence_threshold && !decision.selected_agents.is_empty() {
                 let agent_id = &decision.selected_agents[0];
                 let reg = registry.read().await;
                 reg.get_by_id(agent_id).cloned()
@@ -877,9 +894,9 @@ mod tests {
             requires_subtasks: false,
         };
 
-        let decision = router.route(task, analysis).await.unwrap();
+        let decision = router.route(task, analysis, 0.6).await.unwrap();
 
-        // Should select agents with confidence > AGENT_CONFIDENCE_THRESHOLD (0.6)
+        // Should select agents with confidence > threshold (0.6)
         assert_eq!(decision.selected_agents.len(), 2);
         assert!(decision.selected_agents.contains(&"agent-1".to_string()));
         assert!(decision.selected_agents.contains(&"agent-2".to_string()));
@@ -887,6 +904,42 @@ mod tests {
 
         // Confidence should be from first agent
         assert_eq!(decision.confidence, 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_route_with_custom_threshold() {
+        let router = Router::new();
+        let task = Task::new("Test task", TaskType::CodeGeneration);
+
+        let analysis = RoutingAnalysis {
+            task_type: TaskType::CodeGeneration,
+            suggested_agents: vec![
+                ("agent-1".to_string(), 0.7),
+                ("agent-2".to_string(), 0.5),
+            ],
+            can_parallelize: false,
+            estimated_complexity: 3,
+            requires_subtasks: false,
+        };
+
+        // Using threshold of 0.6 should only select agent-1
+        let decision = router.route(task, analysis, 0.6).await.unwrap();
+        assert_eq!(decision.selected_agents.len(), 1);
+        assert!(decision.selected_agents.contains(&"agent-1".to_string()));
+
+        // Using threshold of 0.4 should select both
+        let analysis2 = RoutingAnalysis {
+            task_type: TaskType::CodeGeneration,
+            suggested_agents: vec![
+                ("agent-1".to_string(), 0.7),
+                ("agent-2".to_string(), 0.5),
+            ],
+            can_parallelize: false,
+            estimated_complexity: 3,
+            requires_subtasks: false,
+        };
+        let decision2 = router.route(task, analysis2, 0.4).await.unwrap();
+        assert_eq!(decision2.selected_agents.len(), 2);
     }
 
     #[tokio::test]
@@ -902,7 +955,7 @@ mod tests {
             requires_subtasks: false,
         };
 
-        let decision = router.route(task, analysis).await.unwrap();
+        let decision = router.route(task, analysis, 0.6).await.unwrap();
         
         assert_eq!(decision.selected_agents.len(), 0);
         assert_eq!(decision.confidence, 0.0);
@@ -924,10 +977,10 @@ mod tests {
             requires_subtasks: false,
         };
 
-        let decision = router.route(task, analysis).await.unwrap();
+        let decision = router.route(task, analysis, 0.6).await.unwrap();
         
 
-        // No agents should be selected (all below AGENT_CONFIDENCE_THRESHOLD)
+        // No agents should be selected (all below threshold)
         assert_eq!(decision.selected_agents.len(), 0);
     }
 
@@ -1105,7 +1158,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
         
-        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None);
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None, 0.6);
         
         assert!(orchestrator.executor().active_count().await == 0);
     }
@@ -1117,7 +1170,7 @@ mod tests {
         let registry = Arc::new(RwLock::new(AgentRegistry::new()));
         let shared_memory = Arc::new(SharedMemory::new());
 
-        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None);
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None, 0.6);
         let task = Task::new("Test task", TaskType::CodeGeneration);
         let session = Session::new("Test Session");
 
@@ -1127,6 +1180,39 @@ mod tests {
         
         // Expect an error since no agents are registered for routing
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_confidence_threshold() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let shared_memory = Arc::new(SharedMemory::new());
+
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None, 0.8);
+        
+        assert_eq!(orchestrator.confidence_threshold(), 0.8);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_set_confidence_threshold() {
+        let (event_tx, _event_rx) = mpsc::channel(10);
+        let llm_client: Arc<dyn LlmProvider> = Arc::new(LlmClient::new("test-key", "gpt-4o", 4096, 0.7));
+        let registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let shared_memory = Arc::new(SharedMemory::new());
+
+        let mut orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None, 0.6);
+        
+        orchestrator.set_confidence_threshold(0.9);
+        assert_eq!(orchestrator.confidence_threshold(), 0.9);
+        
+        // Test clamping - value above 1.0 should be clamped to 1.0
+        orchestrator.set_confidence_threshold(1.5);
+        assert_eq!(orchestrator.confidence_threshold(), 1.0);
+        
+        // Test clamping - value below 0.0 should be clamped to 0.0
+        orchestrator.set_confidence_threshold(-0.5);
+        assert_eq!(orchestrator.confidence_threshold(), 0.0);
     }
 
     #[tokio::test]
@@ -1144,7 +1230,7 @@ mod tests {
 
         let registry = Arc::new(RwLock::new(registry));
         let shared_memory = Arc::new(SharedMemory::new());
-        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None);
+        let orchestrator = Orchestrator::new(llm_client, registry, shared_memory, event_tx, 5, None, 0.6);
 
         let agent = Agent::new("test-agent", AgentRole::Coder, "gpt-4o");
         let history = vec![Message::user("Hello")];

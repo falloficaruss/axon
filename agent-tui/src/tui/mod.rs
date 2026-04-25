@@ -265,6 +265,7 @@ impl App {
                 agent_event_tx.clone(),
                 config.orchestration.max_concurrent_agents,
                 config.workspace_root(),
+                config.orchestration.routing_confidence_threshold,
             ))
         });
         
