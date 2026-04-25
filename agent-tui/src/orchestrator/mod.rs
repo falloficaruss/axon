@@ -20,9 +20,6 @@ use crate::{
     types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType, Plan, Subtask, ExecutionContext},
 };
 
-/// Confidence threshold for agent selection in routing
-pub const AGENT_CONFIDENCE_THRESHOLD: f32 = 0.6;
-
 /// Dynamic task router
 #[derive(Clone)]
 pub struct Router;
@@ -598,6 +595,7 @@ impl Orchestrator {
                 let llm_client = self.llm_client.clone();
                 let session_clone = session.clone();
                 let mut dep_results = HashMap::new();
+                let confidence_threshold = self.confidence_threshold;
                 
                 for dep_id in &subtask.dependencies {
                     if let Some(res) = results.get(dep_id) {
@@ -613,7 +611,7 @@ impl Orchestrator {
                         subtask,
                         &session_clone,
                         dep_results,
-                        self.confidence_threshold,
+                        confidence_threshold,
                     ).await;
                     (subtask_id, res)
                 });
@@ -923,7 +921,7 @@ mod tests {
         };
 
         // Using threshold of 0.6 should only select agent-1
-        let decision = router.route(task, analysis, 0.6).await.unwrap();
+        let decision = router.route(task.clone(), analysis, 0.6).await.unwrap();
         assert_eq!(decision.selected_agents.len(), 1);
         assert!(decision.selected_agents.contains(&"agent-1".to_string()));
 
@@ -938,7 +936,8 @@ mod tests {
             estimated_complexity: 3,
             requires_subtasks: false,
         };
-        let decision2 = router.route(task, analysis2, 0.4).await.unwrap();
+        let task2 = Task::new("Test task", TaskType::CodeGeneration);
+        let decision2 = router.route(task2, analysis2, 0.4).await.unwrap();
         assert_eq!(decision2.selected_agents.len(), 2);
     }
 
