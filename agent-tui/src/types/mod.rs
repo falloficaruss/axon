@@ -530,6 +530,104 @@ impl Plan {
     }
 }
 
+/// Lifecycle state for a persisted execution run
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunStatus {
+    Queued,
+    Analyzed,
+    Planned,
+    AwaitingApproval,
+    Running,
+    Blocked,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Persisted execution run for a task or interaction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Run {
+    pub id: Id,
+    pub session_id: Id,
+    pub task_id: Option<Id>,
+    pub title: String,
+    pub status: RunStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl Run {
+    pub fn new(session_id: &str, title: &str, task_id: Option<Id>) -> Self {
+        let now = Utc::now();
+        Self {
+            id: generate_id(),
+            session_id: session_id.to_string(),
+            task_id,
+            title: title.to_string(),
+            status: RunStatus::Queued,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            error: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn transition_to(&mut self, status: RunStatus) {
+        self.status = status;
+        self.updated_at = Utc::now();
+
+        if matches!(
+            status,
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
+        ) {
+            self.completed_at = Some(self.updated_at);
+        }
+    }
+}
+
+/// Structured event types for persisted runs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RunEventKind {
+    Created,
+    StatusChanged { from: RunStatus, to: RunStatus },
+    UserMessage { content: String },
+    RoutingStarted,
+    AgentSelected { agent_id: Id },
+    AgentStarted { agent_id: Id },
+    AgentMessage { agent_id: Id, content: String },
+    AgentCompleted { agent_id: Id, success: bool },
+    Error { message: String },
+    Cancelled,
+}
+
+/// Event emitted during execution of a run
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunEvent {
+    pub id: Id,
+    pub run_id: Id,
+    pub session_id: Id,
+    pub task_id: Option<Id>,
+    pub timestamp: DateTime<Utc>,
+    pub kind: RunEventKind,
+}
+
+impl RunEvent {
+    pub fn new(run_id: &str, session_id: &str, task_id: Option<Id>, kind: RunEventKind) -> Self {
+        Self {
+            id: generate_id(),
+            run_id: run_id.to_string(),
+            session_id: session_id.to_string(),
+            task_id,
+            timestamp: Utc::now(),
+            kind,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +739,21 @@ mod tests {
 
         assert_eq!(plan.parallel_groups.len(), 1);
         assert_eq!(plan.parallel_groups[0].len(), 2);
+    }
+
+    #[test]
+    fn test_run_transitions_to_terminal_state() {
+        let mut run = Run::new("session-1", "Implement feature", Some("task-1".to_string()));
+
+        assert_eq!(run.status, RunStatus::Queued);
+        assert!(run.completed_at.is_none());
+
+        run.transition_to(RunStatus::Running);
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.completed_at.is_none());
+
+        run.transition_to(RunStatus::Completed);
+        assert_eq!(run.status, RunStatus::Completed);
+        assert!(run.completed_at.is_some());
     }
 }

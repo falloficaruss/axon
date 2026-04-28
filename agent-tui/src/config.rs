@@ -97,6 +97,15 @@ impl Config {
         Self::resolve_path(&self.persistence.memory_dir)
     }
 
+    /// Get absolute run directory for execution logs
+    pub fn run_dir(&self) -> PathBuf {
+        let session_dir = self.session_dir();
+        session_dir
+            .parent()
+            .map(|parent| parent.join("runs"))
+            .unwrap_or_else(|| session_dir.join("runs"))
+    }
+
     /// Get absolute workspace root directory (for file operations)
     pub fn workspace_root(&self) -> Option<PathBuf> {
         self.persistence

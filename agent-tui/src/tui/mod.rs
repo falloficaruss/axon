@@ -31,7 +31,10 @@ use crate::{
     config::Config,
     llm::LlmProvider,
     orchestrator::Orchestrator,
-    types::{AppEvent, Message, MessageRole, SessionMode, Agent, Task, TaskType},
+    types::{
+        Agent, AppEvent, Message, MessageRole, Run, RunEvent, RunEventKind, RunStatus,
+        SessionMode, Task, TaskType,
+    },
 };
 #[cfg(feature = "mock-llm")]
 use crate::llm::MockLlmClient;
@@ -176,6 +179,8 @@ pub struct App {
     pending_confirmation: Option<PendingConfirmation>,
     /// Selected slash-command suggestion index
     command_selected_index: usize,
+    /// Persisted run currently attached to the active task
+    current_run_id: Option<String>,
 }
 
 /// Application modes
@@ -293,6 +298,7 @@ impl App {
             agent_selected_index: 0,
             pending_confirmation: None,
             command_selected_index: 0,
+            current_run_id: None,
         })
     }
 
@@ -700,6 +706,9 @@ impl App {
                     self.session_manager.session.add_message(msg.clone());
                     self.chat.add_message(msg);
                 }
+                if let Err(e) = self.complete_current_run(RunStatus::Completed, None).await {
+                    warn!("Failed to persist completed run: {}", e);
+                }
                 self.task_state.complete(result);
             }
             AppEvent::AutoResult(result) => {
@@ -726,6 +735,9 @@ impl App {
             AppEvent::Error(msg) => {
                 error!("Application error: {}", msg);
                 self.chat.add_message(Message::system(&format!("Error: {}", msg)));
+                if let Err(e) = self.complete_current_run(RunStatus::Failed, Some(msg.clone())).await {
+                    warn!("Failed to persist failed run: {}", e);
+                }
                 self.task_state.fail(msg);
             }
             AppEvent::Status(msg) => {
@@ -752,6 +764,11 @@ impl App {
             AgentEvent::Started { agent_id } => {
                 debug!("Agent {} started processing", agent_id);
                 self.chat.set_streaming(true);
+                if let Err(e) = self.append_run_event(RunEventKind::AgentStarted {
+                    agent_id: agent_id.clone(),
+                }).await {
+                    warn!("Failed to persist agent started event: {}", e);
+                }
                 if let Err(e) = self.event_tx.send(AppEvent::Status(format!("Agent {} started", agent_id))).await {
                     warn!("Failed to send agent started status: {}", e);
                 }
@@ -760,16 +777,37 @@ impl App {
                 debug!("Agent {} completed processing", agent_id);
                 self.chat.set_streaming(false);
                 if result.success {
+                    if let Err(e) = self.append_run_event(RunEventKind::AgentCompleted {
+                        agent_id: agent_id.clone(),
+                        success: true,
+                    }).await {
+                        warn!("Failed to persist agent completed event: {}", e);
+                    }
+                    if let Err(e) = self.complete_current_run(RunStatus::Completed, None).await {
+                        warn!("Failed to persist completed run: {}", e);
+                    }
                     let _ = self.event_tx.send(AppEvent::Status(format!("Agent {} completed successfully", agent_id))).await;
                     let _ = self.event_tx.send(AppEvent::TaskCompleted).await;
                 } else {
                     let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+                    if let Err(e) = self.append_run_event(RunEventKind::AgentCompleted {
+                        agent_id: agent_id.clone(),
+                        success: false,
+                    }).await {
+                        warn!("Failed to persist agent failed event: {}", e);
+                    }
                     if let Err(e) = self.event_tx.send(AppEvent::Error(format!("Agent {} failed: {}", agent_id, error_msg))).await {
                         warn!("Failed to send agent failed error: {}", e);
                     }
                 }
             }
             AgentEvent::Message { agent_id, content } => {
+                if let Err(e) = self.append_run_event(RunEventKind::AgentMessage {
+                    agent_id: agent_id.clone(),
+                    content: content.clone(),
+                }).await {
+                    warn!("Failed to persist agent message event: {}", e);
+                }
                 if let Err(e) = self.event_tx.send(AppEvent::MessageUpdate { agent_id, content }).await {
                     warn!("Failed to send message update: {}", e);
                 }
@@ -777,6 +815,11 @@ impl App {
             AgentEvent::Error { agent_id, error } => {
                 self.chat.set_streaming(false);
                 error!("Agent {} error: {}", agent_id, error);
+                if let Err(e) = self.append_run_event(RunEventKind::Error {
+                    message: format!("Agent {} error: {}", agent_id, error),
+                }).await {
+                    warn!("Failed to persist agent error event: {}", e);
+                }
                 if let Err(e) = self.event_tx.send(AppEvent::Error(format!("Agent {} error: {}", agent_id, error))).await {
                     warn!("Failed to send agent error: {}", e);
                 }
@@ -788,6 +831,7 @@ impl App {
             }
             AgentEvent::ConfirmationRequest { agent_id, title, message, changes, response_tx } => {
                 debug!("Agent {} requested confirmation: {}", agent_id, title);
+                let _ = self.transition_current_run(RunStatus::AwaitingApproval).await;
                 self.pending_confirmation = Some(PendingConfirmation {
                     title: title.clone(),
                     message: message.clone(),
@@ -838,6 +882,106 @@ impl App {
         let msg = Message::system(text);
         self.session_manager.session.add_message(msg.clone());
         self.chat.add_message(msg);
+    }
+
+    async fn start_run(&mut self, title: &str, task_id: Option<String>) -> Result<()> {
+        let session_id = self.session_manager.session.id.clone();
+        let mut run = Run::new(&session_id, title, task_id.clone());
+        self.session_manager.run_store.create_run(&run).await?;
+        self.session_manager.run_store.append_event(&RunEvent::new(
+            &run.id,
+            &session_id,
+            task_id.clone(),
+            RunEventKind::Created,
+        )).await?;
+        run.transition_to(RunStatus::Running);
+        self.session_manager
+            .run_store
+            .append_event(&RunEvent::new(
+                &run.id,
+                &session_id,
+                task_id,
+                RunEventKind::StatusChanged {
+                    from: RunStatus::Queued,
+                    to: RunStatus::Running,
+                },
+            ))
+            .await?;
+        self.session_manager
+            .run_store
+            .save_run(&run)
+            .await?;
+        self.current_run_id = Some(run.id);
+        Ok(())
+    }
+
+    async fn append_run_event(&self, kind: RunEventKind) -> Result<()> {
+        if let Some(run_id) = self.current_run_id.as_deref() {
+            let event = RunEvent::new(
+                run_id,
+                &self.session_manager.session.id,
+                self.task_state.task_id.clone(),
+                kind,
+            );
+            self.session_manager.run_store.append_event(&event).await?;
+        }
+        Ok(())
+    }
+
+    async fn transition_current_run(&mut self, status: RunStatus) -> Result<()> {
+        if let Some(run_id) = self.current_run_id.clone() {
+            let current = self.session_manager.run_store.load_run(&run_id).await?;
+            self.session_manager
+                .run_store
+                .append_event(&RunEvent::new(
+                    &run_id,
+                    &current.session_id,
+                    current.task_id.clone(),
+                    RunEventKind::StatusChanged {
+                        from: current.status,
+                        to: status,
+                    },
+                ))
+                .await?;
+            self.session_manager
+                .run_store
+                .update_run_status(&run_id, status, current.error)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn complete_current_run(
+        &mut self,
+        status: RunStatus,
+        error_message: Option<String>,
+    ) -> Result<()> {
+        if let Some(run_id) = self.current_run_id.clone() {
+            let current = self.session_manager.run_store.load_run(&run_id).await?;
+            self.session_manager
+                .run_store
+                .append_event(&RunEvent::new(
+                    &run_id,
+                    &current.session_id,
+                    current.task_id.clone(),
+                    match &error_message {
+                        Some(message) => RunEventKind::Error {
+                            message: message.clone(),
+                        },
+                        None => RunEventKind::StatusChanged {
+                            from: current.status,
+                            to: status,
+                        },
+                    },
+                ))
+                .await?;
+            self.session_manager
+                .run_store
+                .update_run_status(&run_id, status, error_message)
+                .await?;
+            self.current_run_id = None;
+        }
+        Ok(())
     }
 
     /// Submit the current input
@@ -897,6 +1041,19 @@ impl App {
 
                         // Clone ID for task state before moving into async block
                         let session_id = session_clone.id.clone();
+                        self.start_run(
+                            &format!("Manual run with {}", agent_name),
+                            Some(session_id.clone()),
+                        )
+                        .await?;
+                        self.append_run_event(RunEventKind::UserMessage {
+                            content: content.clone(),
+                        })
+                        .await?;
+                        self.append_run_event(RunEventKind::AgentSelected {
+                            agent_id: agent.id.clone(),
+                        })
+                        .await?;
 
                         // Spawn the agent execution in a background task
                         let handle = tokio::spawn(async move {
@@ -924,6 +1081,13 @@ impl App {
                     // Create a task
                     let task = Task::new(&content, TaskType::General);
                     let task_id = task.id.clone();
+                    self.start_run(&format!("Auto run: {}", content), Some(task_id.clone()))
+                        .await?;
+                    self.append_run_event(RunEventKind::UserMessage {
+                        content: content.clone(),
+                    })
+                    .await?;
+                    self.append_run_event(RunEventKind::RoutingStarted).await?;
 
                     // Spawn the auto-orchestration in a background task
                     let handle = tokio::spawn(async move {
@@ -965,6 +1129,8 @@ impl App {
     async fn cancel_current_task(&mut self) -> Result<()> {
         if self.task_state.is_running() {
             self.task_state.cancel();
+            let _ = self.append_run_event(RunEventKind::Cancelled).await;
+            let _ = self.complete_current_run(RunStatus::Cancelled, None).await;
             let msg = Message::system("Task cancelled by user.");
             self.session_manager.session.add_message(msg.clone());
             self.chat.add_message(msg);

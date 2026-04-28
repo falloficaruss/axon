@@ -5,7 +5,7 @@ use anyhow::Result;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::persistence::{SessionStore, MemoryStore};
+use crate::persistence::{MemoryStore, RunStore, SessionStore};
 use crate::types::Session;
 
 /// Manages session state and persistence
@@ -18,6 +18,8 @@ pub struct SessionManager {
     pub session_store: Arc<SessionStore>,
     /// Memory store for persistence
     pub memory_store: Arc<MemoryStore>,
+    /// Run store for persisted execution logs
+    pub run_store: Arc<RunStore>,
     /// Last auto-save time
     pub last_save: Instant,
     /// Last session list refresh time
@@ -35,12 +37,14 @@ impl SessionManager {
         let session = Session::new("New Session");
         let session_store = Arc::new(SessionStore::new(config.session_dir()));
         let memory_store = Arc::new(MemoryStore::new(config.memory_dir()));
+        let run_store = Arc::new(RunStore::new(config.run_dir()));
         
         Self {
             session,
             sessions: Vec::new(),
             session_store,
             memory_store,
+            run_store,
             last_save: Instant::now(),
             last_session_refresh: Instant::now(),
             memory_keys: Vec::new(),
