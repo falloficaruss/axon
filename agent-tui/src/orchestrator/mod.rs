@@ -3,13 +3,15 @@
 //! This module handles multi-agent orchestration, task routing, and execution.
 
 pub mod pool;
+pub mod events;
 
 pub use pool::AgentPool;
+pub use events::{RuntimeEvent, RuntimeEventKind, TaskLifecycleState};
 
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
@@ -506,6 +508,8 @@ pub struct Orchestrator {
     workspace_root: Option<std::path::PathBuf>,
     /// Confidence threshold for agent selection
     confidence_threshold: f32,
+    /// Runtime event stream for task lifecycle observability
+    runtime_event_tx: broadcast::Sender<RuntimeEvent>,
 }
 
 impl Orchestrator {
@@ -519,6 +523,7 @@ impl Orchestrator {
         workspace_root: Option<std::path::PathBuf>,
         confidence_threshold: f32,
     ) -> Self {
+        let (runtime_event_tx, _) = broadcast::channel(1024);
         Self {
             llm_client: llm_client.clone(),
             registry,
@@ -528,16 +533,35 @@ impl Orchestrator {
             executor: Executor::new(llm_client, shared_memory, event_tx, max_concurrent, workspace_root.clone()),
             workspace_root,
             confidence_threshold,
+            runtime_event_tx,
         }
+    }
+
+    fn emit_runtime_event(&self, kind: RuntimeEventKind) {
+        let _ = self.runtime_event_tx.send(RuntimeEvent::new(kind));
+    }
+
+    pub fn subscribe_runtime_events(&self) -> broadcast::Receiver<RuntimeEvent> {
+        self.runtime_event_tx.subscribe()
     }
 
     /// Execute a task with automatic routing and planning
     pub async fn execute_auto(&self, task: Task, session: &Session) -> Result<TaskResult> {
+        self.emit_runtime_event(RuntimeEventKind::OrchestrationStarted {
+            task_id: task.id.clone(),
+            description: task.description.clone(),
+        });
+
         // Analyze the task for routing
         let analysis = {
             let registry = self.registry.read().await;
             self.router.analyze(self.llm_client.clone(), &registry, &task, session).await?
         };
+        self.emit_runtime_event(RuntimeEventKind::RoutingCompleted {
+            task_id: task.id.clone(),
+            suggested_agents: analysis.suggested_agents.len(),
+            requires_subtasks: analysis.requires_subtasks,
+        });
 
         // Check if task decomposition is needed
         let plan = if analysis.requires_subtasks || analysis.estimated_complexity > 5 {
@@ -560,11 +584,20 @@ impl Orchestrator {
             plan.subtasks = vec![subtask];
             plan
         };
+        self.emit_runtime_event(RuntimeEventKind::PlanCreated {
+            task_id: task.id.clone(),
+            subtask_count: plan.subtasks.len(),
+        });
 
         info!("Executing plan with {} subtasks", plan.subtasks.len());
 
         // Execute subtasks according to the plan
-        self.execute_plan(plan, session).await
+        let result = self.execute_plan(plan, session).await;
+        self.emit_runtime_event(RuntimeEventKind::OrchestrationCompleted {
+            task_id: task.id,
+            success: result.as_ref().map(|r| r.success).unwrap_or(false),
+        });
+        result
     }
 
     /// Execute a plan (sequence of subtasks)
@@ -573,6 +606,11 @@ impl Orchestrator {
         let mut completed: HashSet<Id> = HashSet::new();
         let mut in_progress: HashSet<Id> = HashSet::new();
         let mut join_set = JoinSet::new();
+        let subtask_descriptions: HashMap<Id, String> = plan
+            .subtasks
+            .iter()
+            .map(|s| (s.id.clone(), s.description.clone()))
+            .collect();
 
         let total_subtasks = plan.subtasks.len();
         info!("Starting execution of plan with {} subtasks", total_subtasks);
@@ -587,6 +625,11 @@ impl Orchestrator {
 
             for subtask in ready_subtasks {
                 let subtask_id = subtask.id.clone();
+                self.emit_runtime_event(RuntimeEventKind::TaskStateChanged {
+                    subtask_id: subtask_id.clone(),
+                    description: subtask.description.clone(),
+                    state: TaskLifecycleState::Queued,
+                });
                 in_progress.insert(subtask_id.clone());
 
                 // Use shared executor instead of creating new clones for each subtask
@@ -596,6 +639,7 @@ impl Orchestrator {
                 let session_clone = session.clone();
                 let mut dep_results = HashMap::new();
                 let confidence_threshold = self.confidence_threshold;
+                let runtime_event_tx = self.runtime_event_tx.clone();
                 
                 for dep_id in &subtask.dependencies {
                     if let Some(res) = results.get(dep_id) {
@@ -604,6 +648,11 @@ impl Orchestrator {
                 }
 
                 join_set.spawn(async move {
+                    let _ = runtime_event_tx.send(RuntimeEvent::new(RuntimeEventKind::TaskStateChanged {
+                        subtask_id: subtask_id.clone(),
+                        description: subtask.description.clone(),
+                        state: TaskLifecycleState::Running,
+                    }));
                     let res = Self::execute_subtask_with_executor(
                         executor,
                         registry,
@@ -626,11 +675,32 @@ impl Orchestrator {
             if let Some(res) = join_set.join_next().await {
                 match res {
                     Ok((id, Ok(result))) => {
+                        let state = if result.success {
+                            TaskLifecycleState::Completed
+                        } else {
+                            TaskLifecycleState::Failed
+                        };
+                        self.emit_runtime_event(RuntimeEventKind::TaskStateChanged {
+                            subtask_id: id.clone(),
+                            description: subtask_descriptions
+                                .get(&id)
+                                .cloned()
+                                .unwrap_or_else(|| id.clone()),
+                            state,
+                        });
                         results.insert(id.clone(), result);
                         completed.insert(id.clone());
                         in_progress.remove(&id);
                     }
                     Ok((id, Err(e))) => {
+                        self.emit_runtime_event(RuntimeEventKind::TaskStateChanged {
+                            subtask_id: id.clone(),
+                            description: subtask_descriptions
+                                .get(&id)
+                                .cloned()
+                                .unwrap_or_else(|| id.clone()),
+                            state: TaskLifecycleState::Failed,
+                        });
                         return Err(anyhow!("Subtask {} failed with error: {}", id, e));
                     }
                     Err(e) => {
@@ -691,6 +761,7 @@ impl Orchestrator {
             ),
             workspace_root: self.workspace_root.clone(),
             confidence_threshold: self.confidence_threshold,
+            runtime_event_tx: self.runtime_event_tx.clone(),
         }
     }
 
