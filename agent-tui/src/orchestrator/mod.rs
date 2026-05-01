@@ -4,15 +4,17 @@
 
 pub mod pool;
 pub mod events;
+pub mod event_bus;
+pub mod dag_scheduler;
 
 pub use pool::AgentPool;
 pub use events::{RuntimeEvent, RuntimeEventKind, TaskLifecycleState};
 
 use anyhow::{anyhow, Result};
-use std::collections::{HashMap, HashSet};
+use futures::future::join_all;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -21,6 +23,8 @@ use crate::{
     shared::SharedMemory,
     types::{Agent, AgentState, Task, TaskResult, RoutingDecision, RoutingAnalysis, Session, Id, Message, MessageRole, TaskType, Plan, Subtask, ExecutionContext},
 };
+use self::dag_scheduler::DagScheduler;
+use self::event_bus::TypedEventBus;
 
 /// Dynamic task router
 #[derive(Clone)]
@@ -509,7 +513,7 @@ pub struct Orchestrator {
     /// Confidence threshold for agent selection
     confidence_threshold: f32,
     /// Runtime event stream for task lifecycle observability
-    runtime_event_tx: broadcast::Sender<RuntimeEvent>,
+    runtime_event_bus: TypedEventBus,
 }
 
 impl Orchestrator {
@@ -523,7 +527,7 @@ impl Orchestrator {
         workspace_root: Option<std::path::PathBuf>,
         confidence_threshold: f32,
     ) -> Self {
-        let (runtime_event_tx, _) = broadcast::channel(1024);
+        let runtime_event_bus = TypedEventBus::new(1024);
         Self {
             llm_client: llm_client.clone(),
             registry,
@@ -533,16 +537,16 @@ impl Orchestrator {
             executor: Executor::new(llm_client, shared_memory, event_tx, max_concurrent, workspace_root.clone()),
             workspace_root,
             confidence_threshold,
-            runtime_event_tx,
+            runtime_event_bus,
         }
     }
 
     fn emit_runtime_event(&self, kind: RuntimeEventKind) {
-        let _ = self.runtime_event_tx.send(RuntimeEvent::new(kind));
+        self.runtime_event_bus.publish(kind);
     }
 
     pub fn subscribe_runtime_events(&self) -> broadcast::Receiver<RuntimeEvent> {
-        self.runtime_event_tx.subscribe()
+        self.runtime_event_bus.subscribe()
     }
 
     /// Execute a task with automatic routing and planning
@@ -602,80 +606,73 @@ impl Orchestrator {
 
     /// Execute a plan (sequence of subtasks)
     async fn execute_plan(&self, plan: Plan, session: &Session) -> Result<TaskResult> {
+        let scheduler = DagScheduler::new(plan.clone());
+        let execution_batches = scheduler.execution_batches()?;
         let mut results: HashMap<Id, TaskResult> = HashMap::new();
-        let mut completed: HashSet<Id> = HashSet::new();
-        let mut in_progress: HashSet<Id> = HashSet::new();
-        let mut join_set = JoinSet::new();
         let subtask_descriptions: HashMap<Id, String> = plan
             .subtasks
             .iter()
             .map(|s| (s.id.clone(), s.description.clone()))
             .collect();
 
-        let total_subtasks = plan.subtasks.len();
-        info!("Starting execution of plan with {} subtasks", total_subtasks);
+        info!(
+            "Starting deterministic DAG execution with {} subtasks in {} batches",
+            plan.subtasks.len(),
+            execution_batches.len()
+        );
 
-        while completed.len() < total_subtasks {
-            // Find subtasks that are ready to run (not started, all dependencies completed)
-            let ready_subtasks: Vec<Subtask> = plan.subtasks.iter()
-                .filter(|s| !completed.contains(&s.id) && !in_progress.contains(&s.id))
-                .filter(|s| s.dependencies.iter().all(|dep| completed.contains(dep)))
-                .cloned()
-                .collect();
-
-            for subtask in ready_subtasks {
-                let subtask_id = subtask.id.clone();
+        for batch in execution_batches {
+            for subtask in &batch {
                 self.emit_runtime_event(RuntimeEventKind::TaskStateChanged {
-                    subtask_id: subtask_id.clone(),
+                    subtask_id: subtask.id.clone(),
                     description: subtask.description.clone(),
                     state: TaskLifecycleState::Queued,
                 });
-                in_progress.insert(subtask_id.clone());
+            }
 
-                // Use shared executor instead of creating new clones for each subtask
+            let futures = batch.into_iter().map(|subtask| {
+                let subtask_id = subtask.id.clone();
+                let description = subtask.description.clone();
                 let executor = self.executor.clone();
                 let registry = self.registry.clone();
                 let llm_client = self.llm_client.clone();
                 let session_clone = session.clone();
-                let mut dep_results = HashMap::new();
                 let confidence_threshold = self.confidence_threshold;
-                let runtime_event_tx = self.runtime_event_tx.clone();
-                
+                let runtime_event_bus = self.runtime_event_bus.clone();
+                let mut dep_results = HashMap::new();
                 for dep_id in &subtask.dependencies {
                     if let Some(res) = results.get(dep_id) {
                         dep_results.insert(dep_id.clone(), res.clone());
                     }
                 }
 
-                join_set.spawn(async move {
-                    let _ = runtime_event_tx.send(RuntimeEvent::new(RuntimeEventKind::TaskStateChanged {
+                async move {
+                    runtime_event_bus.publish(RuntimeEventKind::TaskStateChanged {
                         subtask_id: subtask_id.clone(),
-                        description: subtask.description.clone(),
+                        description: description.clone(),
                         state: TaskLifecycleState::Running,
-                    }));
-                    let res = Self::execute_subtask_with_executor(
-                        executor,
-                        registry,
-                        llm_client,
-                        subtask,
-                        &session_clone,
-                        dep_results,
-                        confidence_threshold,
-                    ).await;
-                    (subtask_id, res)
-                });
-            }
+                    });
+                    (
+                        subtask_id,
+                        description,
+                        Self::execute_subtask_with_executor(
+                            executor,
+                            registry,
+                            llm_client,
+                            subtask,
+                            &session_clone,
+                            dep_results,
+                            confidence_threshold,
+                        )
+                        .await,
+                    )
+                }
+            });
 
-            // If nothing is running and nothing is ready, but we're not done, we have a cycle or dead end
-            if in_progress.is_empty() && completed.len() < total_subtasks {
-                return Err(anyhow!("Deadlock detected in plan execution: circular dependency or missing tasks"));
-            }
-
-            // Wait for at least one task to complete
-            if let Some(res) = join_set.join_next().await {
-                match res {
-                    Ok((id, Ok(result))) => {
-                        let state = if result.success {
+            for (id, description, result) in join_all(futures).await {
+                match result {
+                    Ok(task_result) => {
+                        let state = if task_result.success {
                             TaskLifecycleState::Completed
                         } else {
                             TaskLifecycleState::Failed
@@ -685,28 +682,23 @@ impl Orchestrator {
                             description: subtask_descriptions
                                 .get(&id)
                                 .cloned()
-                                .unwrap_or_else(|| id.clone()),
+                                .unwrap_or(description),
                             state,
                         });
-                        results.insert(id.clone(), result);
-                        completed.insert(id.clone());
-                        in_progress.remove(&id);
+                        results.insert(id, task_result);
                     }
-                    Ok((id, Err(e))) => {
+                    Err(e) => {
                         self.emit_runtime_event(RuntimeEventKind::TaskStateChanged {
                             subtask_id: id.clone(),
                             description: subtask_descriptions
                                 .get(&id)
                                 .cloned()
-                                .unwrap_or_else(|| id.clone()),
+                                .unwrap_or(description),
                             state: TaskLifecycleState::Failed,
                         });
                         return Err(anyhow!("Subtask {} failed with error: {}", id, e));
                     }
-                    Err(e) => {
-                        return Err(anyhow!("Task join error: {}", e));
-                    }
-                }
+                };
             }
         }
 
@@ -761,7 +753,7 @@ impl Orchestrator {
             ),
             workspace_root: self.workspace_root.clone(),
             confidence_threshold: self.confidence_threshold,
-            runtime_event_tx: self.runtime_event_tx.clone(),
+            runtime_event_bus: self.runtime_event_bus.clone(),
         }
     }
 

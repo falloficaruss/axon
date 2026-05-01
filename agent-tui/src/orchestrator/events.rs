@@ -26,16 +26,17 @@ pub enum RuntimeEventKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEvent {
+    pub sequence: u64,
     pub timestamp: DateTime<Utc>,
     pub kind: RuntimeEventKind,
 }
 
 impl RuntimeEvent {
-    pub fn new(kind: RuntimeEventKind) -> Self {
+    pub fn new(sequence: u64, kind: RuntimeEventKind) -> Self {
         Self {
+            sequence,
             timestamp: Utc::now(),
             kind,
         }
     }
 }
-
