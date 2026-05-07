@@ -21,8 +21,12 @@ impl TypedEventBus {
     }
 
     pub fn publish(&self, kind: RuntimeEventKind) {
+        self.publish_scoped("system".to_string(), None, kind);
+    }
+
+    pub fn publish_scoped(&self, run_id: String, task_id: Option<String>, kind: RuntimeEventKind) {
         let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-        let _ = self.tx.send(RuntimeEvent::new(sequence, kind));
+        let _ = self.tx.send(RuntimeEvent::new(sequence, run_id, task_id, kind));
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
@@ -52,5 +56,7 @@ mod tests {
 
         assert_eq!(first.sequence, 1);
         assert_eq!(second.sequence, 2);
+        assert_eq!(first.run_id, "system");
+        assert_eq!(first.task_id, None);
     }
 }

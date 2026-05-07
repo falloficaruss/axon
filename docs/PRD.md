@@ -16,6 +16,15 @@ The product must reliably support end-to-end coding loops without leaving the te
 - patch/test/review loops
 - final summary with artifacts
 
+## Delivery and Collaboration Mode
+1. Human-implemented delivery
+- The human developer applies all source code changes.
+- The assistant provides implementation-ready patches/snippets in chat.
+- The assistant performs review-first validation after each implementation step.
+
+2. Review gate per change
+- Every completed change is reviewed for correctness, regressions, safety, and test coverage gaps before moving to the next task.
+
 ## Target Users
 1. Individual software engineers implementing and refactoring code
 2. Tech leads reviewing generated changes and execution traces

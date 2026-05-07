@@ -5,10 +5,14 @@ use crate::types::Id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskLifecycleState {
-    Queued,
+    Pending,
+    Ready,
     Running,
+    Blocked,
+    Retrying,
     Completed,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,14 +32,18 @@ pub enum RuntimeEventKind {
 pub struct RuntimeEvent {
     pub sequence: u64,
     pub timestamp: DateTime<Utc>,
+    pub run_id: Id,
+    pub task_id: Option<Id>,
     pub kind: RuntimeEventKind,
 }
 
 impl RuntimeEvent {
-    pub fn new(sequence: u64, kind: RuntimeEventKind) -> Self {
+    pub fn new(sequence: u64, run_id: Id, task_id: Option<Id>, kind: RuntimeEventKind) -> Self {
         Self {
             sequence,
             timestamp: Utc::now(),
+            run_id,
+            task_id,
             kind,
         }
     }

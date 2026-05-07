@@ -12,6 +12,17 @@
 3. Inspectable runtime behavior (events, traces, artifacts)
 4. Clear module contracts that allow incremental extension
 
+## Human-in-the-Loop Execution Contract
+1. Proposal contract
+- Runtime/design/code changes are first expressed as explicit patch instructions in chat.
+
+2. Application contract
+- Source code is applied by the human developer in the local workspace.
+
+3. Validation contract
+- Assistant review is mandatory before advancing phase scope.
+- Review output includes findings, risk level, and required follow-up tests.
+
 ## Layered System
 1. UI Layer (`tui/`)
 - Input, command handling, task/run views, artifact inspection
