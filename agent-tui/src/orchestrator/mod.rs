@@ -608,6 +608,7 @@ impl Orchestrator {
 
     /// Execute a plan (sequence of subtasks)
     async fn execute_plan(&self, run_id: Id, plan: Plan, session: &Session) -> Result<TaskResult> {
+        let run_id = Arc::<str>::from(run_id);
         let scheduler = DagScheduler::new(plan.clone());
         let execution_batches = scheduler.execution_batches()?;
         let mut results: HashMap<Id, TaskResult> = HashMap::new();
@@ -625,7 +626,7 @@ impl Orchestrator {
 
         for batch in execution_batches {
             for subtask in &batch {
-                self.emit_runtime_event(&run_id, Some(subtask.id.clone()), RuntimeEventKind::TaskStateChanged {
+                self.emit_runtime_event(&run_id.to_string(), Some(subtask.id.clone()), RuntimeEventKind::TaskStateChanged {
                     subtask_id: subtask.id.clone(),
                     description: subtask.description.clone(),
                     state: TaskLifecycleState::Ready,
@@ -641,7 +642,7 @@ impl Orchestrator {
                 let session_clone = session.clone();
                 let confidence_threshold = self.confidence_threshold;
                 let runtime_event_bus = self.runtime_event_bus.clone();
-                let run_id = run_id.clone();
+                let run_id = Arc::clone(&run_id);
                 let mut dep_results = HashMap::new();
                 for dep_id in &subtask.dependencies {
                     if let Some(res) = results.get(dep_id) {
@@ -650,7 +651,7 @@ impl Orchestrator {
                 }
 
                 async move {
-                    runtime_event_bus.publish_scoped(run_id, Some(subtask_id.clone()), RuntimeEventKind::TaskStateChanged {
+                    runtime_event_bus.publish_scoped(run_id.to_string(), Some(subtask_id.clone()), RuntimeEventKind::TaskStateChanged {
                         subtask_id: subtask_id.clone(),
                         description: description.clone(),
                         state: TaskLifecycleState::Running,
@@ -680,7 +681,7 @@ impl Orchestrator {
                         } else {
                             TaskLifecycleState::Failed
                         };
-                        self.emit_runtime_event(&run_id, Some(id.clone()), RuntimeEventKind::TaskStateChanged {
+                        self.emit_runtime_event(&run_id.to_string(), Some(id.clone()), RuntimeEventKind::TaskStateChanged {
                             subtask_id: id.clone(),
                             description: subtask_descriptions
                                 .get(&id)
@@ -691,7 +692,7 @@ impl Orchestrator {
                         results.insert(id, task_result);
                     }
                     Err(e) => {
-                        self.emit_runtime_event(&run_id, Some(id.clone()), RuntimeEventKind::TaskStateChanged {
+                        self.emit_runtime_event(&run_id.to_string(), Some(id.clone()), RuntimeEventKind::TaskStateChanged {
                             subtask_id: id.clone(),
                             description: subtask_descriptions
                                 .get(&id)
